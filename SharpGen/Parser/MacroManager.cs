@@ -33,18 +33,21 @@ namespace SharpGen.Parser
     {
         private static readonly Regex MatchIncludeLine = new Regex(@"^\s*#\s+\d+\s+""([^""]+)""", RegexOptions.Compiled);
         private static readonly Regex MatchDefine = new Regex(@"^\s*#define\s+([a-zA-Z_][\w_]*)\s+(.*)", RegexOptions.Compiled);
-        private readonly CastXml _gccxml;
+        private readonly ICastXmlRunner _gccxml;
         private Dictionary<string, string> _currentMacros = null;
         private readonly Dictionary<string, Dictionary<string, string>> _mapIncludeToMacros = new Dictionary<string, Dictionary<string, string>>();
+        private readonly List<string> _includedFiles = new List<string>();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="MacroManager"/> class.
         /// </summary>
         /// <param name="gccxml">The GccXml parser.</param>
-        public MacroManager(CastXml gccxml)
+        public MacroManager(ICastXmlRunner gccxml)
         {
             _gccxml = gccxml;
         }
+
+        public IEnumerable<string> IncludedFiles => _includedFiles;
 
         /// <summary>
         /// Parses the specified C++ header file and fills the <see cref="CppModule"/> with defined macros.
@@ -72,12 +75,8 @@ namespace SharpGen.Parser
         /// <summary>
         /// Parses a macro definition line.
         /// </summary>
-        /// <param name="sendingProcess">The sending process.</param>
-        /// <param name="outLine">The <see cref="System.Diagnostics.DataReceivedEventArgs"/> instance containing the event data.</param>
-        private void ParseLine(object sendingProcess, DataReceivedEventArgs outLine)
+        private void ParseLine(string line)
         {
-            string line = outLine.Data;
-
             // Collect the sort command output.
             if (!String.IsNullOrEmpty(line))
             {
@@ -88,7 +87,9 @@ namespace SharpGen.Parser
                         _currentMacros = null;
                     else
                     {
+                        _includedFiles.Add(result.Groups[1].Value.Replace(@"\\", @"\"));
                         var currentFile = Path.GetFileName(result.Groups[1].Value);
+
                         if (!_mapIncludeToMacros.TryGetValue(currentFile, out _currentMacros))
                         {
                             _currentMacros = new Dictionary<string,string>();
@@ -97,7 +98,7 @@ namespace SharpGen.Parser
                     }
                 }
                 else if (_currentMacros != null)
-                {                    
+                {
                     result = MatchDefine.Match(line);
                     if (result.Success)
                     {

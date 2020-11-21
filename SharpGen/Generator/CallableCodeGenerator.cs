@@ -8,35 +8,38 @@ using Microsoft.CodeAnalysis.CSharp;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using SharpGen.Transform;
+using SharpGen.Logging;
 
 namespace SharpGen.Generator
 {
-    class CallableCodeGenerator : MemberCodeGeneratorBase<CsMethod>
+    class CallableCodeGenerator : MemberCodeGeneratorBase<CsCallable>
     {
-        public CallableCodeGenerator(IGeneratorRegistry generators, IDocumentationLinker documentation, GlobalNamespaceProvider globalNamespace)
-            :base(documentation)
+        public CallableCodeGenerator(IGeneratorRegistry generators, IDocumentationLinker documentation, ExternalDocCommentsReader docReader, GlobalNamespaceProvider globalNamespace, Logger logger)
+            :base(documentation, docReader)
         {
             Generators = generators;
             this.globalNamespace = globalNamespace;
+            this.logger = logger;
         }
 
-        GlobalNamespaceProvider globalNamespace;
+        private readonly GlobalNamespaceProvider globalNamespace;
+        private readonly Logger logger;
 
         public IGeneratorRegistry Generators { get; }
 
-        public override IEnumerable<MemberDeclarationSyntax> GenerateCode(CsMethod csElement)
+        public override IEnumerable<MemberDeclarationSyntax> GenerateCode(CsCallable csElement)
         {
             // Documentation
             var documentationTrivia = GenerateDocumentationTrivia(csElement);
 
-            // method signature (commented if hidden)
+            // method signature
             var methodDeclaration = MethodDeclaration(ParseTypeName(csElement.PublicReturnTypeQualifiedName), csElement.Name)
                 .WithModifiers(TokenList(ParseTokens(csElement.VisibilityName)).Add(Token(SyntaxKind.UnsafeKeyword)))
                 .WithParameterList(
                     ParameterList(
                         SeparatedList(
                             csElement.PublicParameters.Select(param =>
-                                Generators.Parameter.GenerateCode(param)
+                                Generators.Marshalling.GetMarshaller(param).GenerateManagedParameter(param)
                                     .WithDefault(param.DefaultValue == null ? default
                                         : EqualsValueClause(ParseExpression(param.DefaultValue)))
                                 )
@@ -45,37 +48,101 @@ namespace SharpGen.Generator
                 )
                 .WithLeadingTrivia(Trivia(documentationTrivia));
 
-            // If not hidden, generate body
-            if (csElement.Hidden)
+            if (csElement.SignatureOnly)
             {
-                // return Comment(methodDeclaration.NormalizeWhitespace().ToFullString());
+                yield return methodDeclaration
+                    .WithSemicolonToken(Token(SyntaxKind.SemicolonToken))
+                    .WithModifiers(TokenList());
                 yield break;
             }
 
             var statements = new List<StatementSyntax>();
 
-            // foreach parameter
-            foreach (var parameter in csElement.Parameters)
+            foreach (var param in csElement.Parameters)
             {
-                statements.AddRange(Generators.ParameterProlog.GenerateCode(parameter));
+                if ((param.Relations?.Count ?? 0) == 0)
+                {
+                    if (param.UsedAsReturn)
+                    {
+                        statements.Add(GenerateManagedHiddenMarshallableProlog(param));
+                    }
+                    statements.AddRange(Generators.Marshalling.GetMarshaller(param).GenerateManagedToNativeProlog(param));
+                }
+                else
+                {
+                    statements.Add(GenerateManagedHiddenMarshallableProlog(param));
+
+                    foreach (var relation in param.Relations)
+                    {
+                        if (!ValidRelationInScenario(relation))
+                        {
+                            logger.Error(LoggingCodes.InvalidRelationInScenario, $"The relation \"{relation}\" is invalid in a method/function.");
+                            continue;
+                        }
+
+                        var marshaller = Generators.Marshalling.GetRelationMarshaller(relation);
+                        StatementSyntax marshalToNative;
+                        var relatedMarshallableName = (relation as LengthRelation)?.Identifier;
+                        if (relatedMarshallableName is null)
+                        {
+                            marshalToNative = marshaller.GenerateManagedToNative(null, param);
+                        }
+                        else
+                        {
+                            var relatedParameter = csElement.Parameters.Find(p => p.CppElementName == relatedMarshallableName);
+
+                            if (relatedParameter is null)
+                            {
+                                logger.Error(LoggingCodes.InvalidRelationInScenario, $"The relation with \"{relatedMarshallableName}\" parameter is invalid in a method/function \"{csElement.Name}\".");
+                                continue;
+                            }
+
+                            marshalToNative = marshaller.GenerateManagedToNative(relatedParameter, param);
+                        }
+
+                        if (marshalToNative != null)
+                        {
+                            statements.Add(marshalToNative);
+                        }
+                    }
+
+                    statements.AddRange(Generators.Marshalling.GetMarshaller(param).GenerateManagedToNativeProlog(param));
+                }
             }
+
             if (csElement.HasReturnType)
             {
-                statements.Add(LocalDeclarationStatement(
-                    VariableDeclaration(
-                        ParseTypeName(csElement.ReturnType.PublicType.QualifiedName),
-                        SingletonSeparatedList(
-                            VariableDeclarator("__result__")))));
+                statements.Add(GenerateManagedHiddenMarshallableProlog(csElement.ReturnValue));
+                statements.AddRange(
+                    Generators.Marshalling.GetMarshaller(csElement.ReturnValue)
+                        .GenerateManagedToNativeProlog(csElement.ReturnValue));
             }
 
-            var fixedStatements = GenerateFixedStatements(csElement);
 
-            var invocation = Generators.NativeInvocation.GenerateCode(csElement);
-            var callStmt = ExpressionStatement(csElement.HasReturnType && !csElement.IsReturnStructLarge ?
-                AssignmentExpression(SyntaxKind.SimpleAssignmentExpression,
-                    IdentifierName("__result__"),
-                    invocation)
-                    : invocation);
+            foreach (var param in csElement.Parameters)
+            {
+                if (param.IsIn || param.IsRefIn || param.IsRef)
+                {
+                    var marshaller = Generators.Marshalling.GetMarshaller(param);
+                    var marshalToNative = marshaller.GenerateManagedToNative(param, true);
+                    if (marshalToNative != null)
+                    {
+                        statements.Add(marshalToNative);
+                    }
+                }
+            }
+
+            var fixedStatements = csElement.PublicParameters
+                .Select(param => Generators.Marshalling.GetMarshaller(param).GeneratePin(param))
+                .Where(stmt => stmt != null).ToList();
+
+            var callStmt = GeneratorHelpers.GetPlatformSpecificStatements(
+                    globalNamespace,
+                    Generators.Config,
+                    csElement.InteropSignatures.Keys,
+                    (platform) => 
+                        ExpressionStatement(
+                            Generators.NativeInvocation.GenerateCode((csElement, platform, csElement.InteropSignatures[platform]))));
 
             var fixedStatement = fixedStatements.FirstOrDefault()?.WithStatement(callStmt);
             foreach (var statement in fixedStatements.Skip(1))
@@ -83,25 +150,49 @@ namespace SharpGen.Generator
                 fixedStatement = statement.WithStatement(fixedStatement);
             }
 
-            statements.Add((StatementSyntax)fixedStatement ?? callStmt);
+            statements.Add(fixedStatement ?? callStmt);
 
-            foreach (var parameter in csElement.Parameters)
+            foreach (var param in csElement.Parameters)
             {
-                statements.AddRange(Generators.ParameterEpilog.GenerateCode(parameter));
+                if (param.IsRef || param.IsOut)
+                {
+                    var marshaller = Generators.Marshalling.GetMarshaller(param);
+                    var marshalFromNative = marshaller.GenerateNativeToManaged(param, true);
+                    if (marshalFromNative != null)
+                    {
+                        statements.Add(marshalFromNative);
+                    }
+                }
+            }
+
+            if (csElement.HasReturnType)
+            {
+                var marshaller = Generators.Marshalling.GetMarshaller(csElement.ReturnValue);
+                var marshalReturnType = marshaller.GenerateNativeToManaged(csElement.ReturnValue, true);
+                if (marshalReturnType != null)
+                {
+                    statements.Add(marshalReturnType);
+                }
+            }
+            
+            statements.AddRange(csElement.Parameters
+                .Where(param => !param.IsOut)
+                .Select(param => Generators.Marshalling.GetMarshaller(param).GenerateNativeCleanup(param, true))
+                .Where(param => param != null));
+
+
+            if ((csElement.ReturnValue.PublicType.Name == globalNamespace.GetTypeName(WellKnownName.Result)) && csElement.CheckReturnType)
+            {
+                statements.Add(ExpressionStatement(
+                    InvocationExpression(
+                        MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                        IdentifierName(csElement.ReturnValue.Name),
+                        IdentifierName("CheckError")))));
             }
 
             // Return
             if (csElement.HasPublicReturnType)
             {
-                if ((csElement.ReturnType.PublicType.Name == globalNamespace.GetTypeName("Result")) && csElement.CheckReturnType)
-                {
-                    statements.Add(ExpressionStatement(
-                        InvocationExpression(
-                            MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
-                            IdentifierName("__result__"),
-                            IdentifierName("CheckError")))));
-                }
-
                 if (csElement.HasReturnTypeParameter || csElement.ForceReturnType || !csElement.HideReturnType)
                 {
                     statements.Add(ReturnStatement(IdentifierName(csElement.ReturnName)));
@@ -111,59 +202,24 @@ namespace SharpGen.Generator
             yield return methodDeclaration.WithBody(Block(statements));
         }
 
-
-        private static List<FixedStatementSyntax> GenerateFixedStatements(CsMethod csElement)
+        private StatementSyntax GenerateManagedHiddenMarshallableProlog(CsMarshalCallableBase csElement)
         {
-            var fixedStatements = new List<FixedStatementSyntax>();
-            foreach (var param in csElement.Parameters)
-            {
-                FixedStatementSyntax statement = null;
-                if (param.IsArray && param.IsValueType)
-                {
-                    if (param.HasNativeValueType || param.IsOptional)
-                    {
-                        statement = FixedStatement(VariableDeclaration(PointerType(PredefinedType(Token(SyntaxKind.VoidKeyword))),
-                            SingletonSeparatedList(
-                                VariableDeclarator(param.TempName).WithInitializer(EqualsValueClause(
-                                    IdentifierName($"{param.TempName}_")
-                                    )))), EmptyStatement());
-                    }
-                    else
-                    {
-                        statement = FixedStatement(VariableDeclaration(PointerType(PredefinedType(Token(SyntaxKind.VoidKeyword))),
-                            SingletonSeparatedList(
-                                VariableDeclarator(param.TempName).WithInitializer(EqualsValueClause(
-                                    IdentifierName(param.Name)
-                                    )))), EmptyStatement());
-                    }
-                }
-                else if (param.IsFixed && param.IsValueType && !param.HasNativeValueType && !param.IsUsedAsReturnType)
-                {
-                    statement = FixedStatement(VariableDeclaration(PointerType(PredefinedType(Token(SyntaxKind.VoidKeyword))),
-                        SingletonSeparatedList(
-                            VariableDeclarator(param.TempName).WithInitializer(EqualsValueClause(
-                                PrefixUnaryExpression(SyntaxKind.AddressOfExpression,
-                                    IdentifierName(param.Name))
-                                )))), EmptyStatement());
-                }
-                else if (param.IsString && param.IsWideChar)
-                {
-                    statement = FixedStatement(VariableDeclaration(PointerType(PredefinedType(Token(SyntaxKind.CharKeyword))),
-                        SingletonSeparatedList(
-                            VariableDeclarator(param.TempName).WithInitializer(EqualsValueClause(
-                                IdentifierName(param.Name)
-                                )))), EmptyStatement());
-                }
+            var type = csElement.IsArray ?
+                ArrayType(
+                    ParseTypeName(csElement.PublicType.QualifiedName),
+                    SingletonList(ArrayRankSpecifier()))
+                : ParseTypeName(csElement.PublicType.QualifiedName);
 
-                if (statement != null)
-                {
-                    fixedStatements.Add(statement);
-                }
-            }
-
-            return fixedStatements;
+            return LocalDeclarationStatement(
+                VariableDeclaration(
+                    type,
+                    SingletonSeparatedList(
+                        VariableDeclarator(csElement.Name))));
         }
 
-
+        private static bool ValidRelationInScenario(MarshallableRelation relation)
+        {
+            return relation is ConstantValueRelation || relation is LengthRelation;
+        }
     }
 }

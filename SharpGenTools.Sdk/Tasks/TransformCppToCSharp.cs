@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Microsoft.Build.Framework;
 using SharpGen;
@@ -16,7 +17,7 @@ namespace SharpGenTools.Sdk.Tasks
         public string ConsumerBindMappingConfigId { get; set; }
 
         [Required]
-        public ITaskItem FullCppModule { get; set; }
+        public ITaskItem CppModule { get; set; }
 
         [Required]
         public ITaskItem CppConsumerConfigCache { get; set; }
@@ -24,10 +25,7 @@ namespace SharpGenTools.Sdk.Tasks
         [Required]
         public string OutputPath { get; set; }
 
-        public bool ForceGenerator { get; set; }
-
-        [Required]
-        public string GlobalNamespace { get; set; }
+        public ITaskItem[] GlobalNamespaceOverrides { get; set; }
 
         [Required]
         public ITaskItem CSharpModel { get; set; }
@@ -35,29 +33,40 @@ namespace SharpGenTools.Sdk.Tasks
         [Required]
         public ITaskItem DocLinksCache { get; set; }
 
+        public bool GenerateConsumerConfig { get; set; }
+
         protected override bool Execute(ConfigFile config)
         {
-            var group = CppModule.Read(FullCppModule.ItemSpec);
+            var group = SharpGen.CppModel.CppModule.Read(CppModule.ItemSpec);
             config.ExpandDynamicVariables(SharpGenLogger, group);
 
-            var typeRegistry = new TypeRegistry(SharpGenLogger);
+            var docLinker = new DocumentationLinker();
+            var typeRegistry = new TypeRegistry(SharpGenLogger, docLinker);
             var namingRules = new NamingRulesManager();
-            var docAggregator = new DocumentationLinker(typeRegistry);
+
+            var globalNamespace = new GlobalNamespaceProvider();
+
+            foreach (var nameOverride in GlobalNamespaceOverrides ?? Enumerable.Empty<ITaskItem>())
+            {
+                var wellKnownName = nameOverride.ItemSpec;
+                var overridenName = nameOverride.GetMetadata("Override");
+                if (overridenName != null && Enum.TryParse(wellKnownName, out WellKnownName name))
+                {
+                    globalNamespace.OverrideName(name, overridenName);
+                }
+            }
 
             // Run the main mapping process
             var transformer = new TransformManager(
-                new GlobalNamespaceProvider(GlobalNamespace),
+                globalNamespace,
                 namingRules,
                 SharpGenLogger,
                 typeRegistry,
-                docAggregator,
-                new ConstantManager(namingRules, typeRegistry),
-                new AssemblyManager())
-            {
-                ForceGenerator = ForceGenerator
-            };
+                docLinker,
+                new ConstantManager(namingRules, docLinker)
+            );
 
-            var (solution, defines) = transformer.Transform(group, config, null);
+            var (solution, defines) = transformer.Transform(group, config);
 
             solution.Write(CSharpModel.ItemSpec);
 
@@ -65,18 +74,29 @@ namespace SharpGenTools.Sdk.Tasks
 
             consumerConfig.Id = ConsumerBindMappingConfigId;
 
-            consumerConfig.Extension = new List<ConfigBaseRule>(defines);
+            consumerConfig.Extension = new List<ExtensionBaseRule>(defines);
 
             var (bindings, generatedDefines) = transformer.GenerateTypeBindingsForConsumers();
 
             consumerConfig.Bindings.AddRange(bindings);
             consumerConfig.Extension.AddRange(generatedDefines);
 
-            GenerateConfigForConsumers(consumerConfig);
+            consumerConfig.Mappings.AddRange(
+                docLinker.GetAllDocLinks().Select(
+                    link => new MappingRule
+                    {
+                        DocItem = link.cppName,
+                        MappingNameFinal = link.cSharpName
+                    }));
 
-            SaveDocLinks(docAggregator);
+            if (GenerateConsumerConfig)
+            {
+                GenerateConfigForConsumers(consumerConfig); 
+            }
 
-            return true;
+            SaveDocLinks(docLinker);
+
+            return !Log.HasLoggedErrors;
         }
 
         private void SaveDocLinks(DocumentationLinker docAggregator)

@@ -32,35 +32,18 @@ namespace SharpGen.Config
     /// <summary>
     /// Config File.
     /// </summary>
-    [XmlRoot("config", Namespace=NS)]
-    public class ConfigFile
+    [XmlRoot("config", Namespace=XmlNamespace)]
+    public partial class ConfigFile
     {
-        internal const string NS = "urn:SharpGen.Config";
-
-        public ConfigFile()
-        {
-            Depends = new List<string>();
-            Bindings = new List<BindRule>();
-            Extension = new List<ConfigBaseRule>();
-            Files = new List<string>();
-            References = new List<ConfigFile>();
-            IncludeProlog = new List<string>();
-            Sdks = new List<SdkRule>();
-            IncludeDirs = new List<IncludeDirRule>();
-            Variables = new List<KeyValue>();
-            Naming = new List<NamingRule>();
-            Includes = new List<IncludeRule>();
-            Mappings = new List<ConfigBaseRule>();
-            DynamicVariables = new Dictionary<string, string>();
-        }
+        internal const string XmlNamespace = "urn:SharpGen.Config";
 
         /// <summary>
-        /// Gets dynamic variables used by dynamic variable substitution #{MyVariable}
+        /// Gets dynamic variables used by dynamic variable substitution #(MyVariable)
         /// </summary>
         /// <value>The dynamic variables.</value>
         [XmlIgnore]
-        public Dictionary<string, string> DynamicVariables { get; private set; }
-        
+        public Dictionary<string, string> DynamicVariables { get; private set; } = new Dictionary<string, string>();
+
         /// <summary>
         /// Gets or sets the parent of this mapping file.
         /// </summary>
@@ -94,37 +77,43 @@ namespace SharpGen.Config
         public string Id { get; set; }
 
         [XmlElement("depends")]
-        public List<string> Depends { get; set; }
+        public List<string> Depends { get; set; } = new List<string>();
 
         [XmlElement("namespace")]
         public string Namespace { get; set; }
 
         [XmlElement("assembly")]
-        public string Assembly { get; set; }
+        public string Assembly
+        {
+            // The assembly attribute is no longer supported, but we leave the option
+            // so that config files don't break when the option is specified.
+            get => string.Empty;
+            set { }
+        }
 
         [XmlElement("var")]
-        public List<KeyValue> Variables { get; set; }
+        public List<KeyValue> Variables { get; set; } = new List<KeyValue>();
 
         [XmlElement("file")]
-        public List<string> Files { get; set; }
+        public List<string> Files { get; set; } = new List<string>();
 
         [XmlIgnore]
-        public List<ConfigFile> References { get; set; }
+        public List<ConfigFile> References { get; set; } = new List<ConfigFile>();
 
         [XmlElement("sdk")]
-        public List<SdkRule> Sdks { get; set; }
+        public List<SdkRule> Sdks { get; set; } = new List<SdkRule>();
 
         [XmlElement("include-dir")]
-        public List<IncludeDirRule> IncludeDirs { get; set; }
+        public List<IncludeDirRule> IncludeDirs { get; set; } = new List<IncludeDirRule>();
 
         [XmlElement("include-prolog")]
-        public List<string> IncludeProlog { get; set; }
+        public List<string> IncludeProlog { get; set; } = new List<string>();
 
         [XmlElement("include")]
-        public List<IncludeRule> Includes { get; set; }
+        public List<IncludeRule> Includes { get; set; } = new List<IncludeRule>();
 
         [XmlArray("naming"),XmlArrayItem(typeof(NamingRuleShort))]
-        public List<NamingRule> Naming { get; set; }
+        public List<NamingRule> Naming { get; set; } = new List<NamingRule>();
 
         [XmlElement("context-set")]
         public List<ContextSetRule> ContextSets { get; set; }
@@ -136,20 +125,26 @@ namespace SharpGen.Config
         [XmlArrayItem(typeof(CreateCppExtensionRule))]
         [XmlArrayItem(typeof(DefineExtensionRule))]
         [XmlArrayItem(typeof(ConstantRule))]
-        public List<ConfigBaseRule> Extension { get; set; }
+        public List<ExtensionBaseRule> Extension { get; set; } = new List<ExtensionBaseRule>();
 
         [XmlIgnore]
-        public string ExtensionId { get { return Id + "-ext"; } }
+        public string ExtensionId => Id + "-ext";
 
         /// <summary>
         /// Gets the name of the extension header file.
         /// </summary>
         /// <value>The name of the extension header file.</value>
         [XmlIgnore]
-        public string ExtensionFileName { get { return ExtensionId + ".h"; } }
+        public string ExtensionFileName => ExtensionId + ".h";
+
+        /// <summary>
+        /// Gets the name of this configs' primary header file.
+        /// </summary>
+        [XmlIgnore]
+        public string HeaderFileName => Id + ".h";
 
         [XmlArray("bindings")]
-        public List<BindRule> Bindings { get; set; }
+        public List<BindRule> Bindings { get; set; } = new List<BindRule>();
 
         [XmlArray("mapping")]
         [XmlArrayItem(typeof(MappingRule))]
@@ -157,18 +152,7 @@ namespace SharpGen.Config
         [XmlArrayItem(typeof(RemoveRule))]
         [XmlArrayItem(typeof(ContextRule))]
         [XmlArrayItem(typeof(ClearContextRule))]
-        public List<ConfigBaseRule> Mappings { get; set; }
-
-        /// <summary>
-        /// Returns all depend config files
-        /// </summary>
-        /// <returns></returns>
-        public List<ConfigFile> FindAllDependencies()
-        {
-            var dependencies = new List<ConfigFile>();
-            FindAllDependencies(dependencies);
-            return dependencies;
-        }
+        public List<ConfigBaseRule> Mappings { get; set; } = new List<ConfigBaseRule>();
 
         /// <summary>
         /// Finds all dependencies ConfigFile from this instance.
@@ -178,61 +162,12 @@ namespace SharpGen.Config
         {
             foreach (var dependConfigFileId in Depends)
             {
-                var linkedConfig = GetRoot().MapIdToFile[dependConfigFileId];
+                var linkedConfig = GetRoot().mapIdToFile[dependConfigFileId];
                 if (!dependencyListOutput.Contains(linkedConfig))
                     dependencyListOutput.Add(linkedConfig);
 
                 linkedConfig.FindAllDependencies(dependencyListOutput);
             }
-        }
-
-        /// <summary>
-        /// Gets or sets a value indicating whether we need to process mappings.
-        /// </summary>
-        /// <value>
-        /// 	<c>true</c> if this instance is mapping to process; otherwise, <c>false</c>.
-        /// </value>
-        [XmlIgnore]
-        public bool IsMappingToProcess { get; set; }
-
-        /// <summary>
-        /// Indicates whether the current object is equal to another object of the same type.
-        /// </summary>
-        /// <param name="other">An object to compare with this object.</param>
-        /// <returns>
-        /// true if the current object is equal to the <paramref name="other" /> parameter; otherwise, false.
-        /// </returns>
-        public bool Equals(ConfigFile other)
-        {
-            if (ReferenceEquals(null, other)) return false;
-            if (ReferenceEquals(this, other)) return true;
-            return Equals(other.Id, Id);
-        }
-
-        /// <summary>
-        /// Determines whether the specified <see cref="System.Object"/> is equal to this instance.
-        /// </summary>
-        /// <param name="obj">The <see cref="System.Object"/> to compare with this instance.</param>
-        /// <returns>
-        /// 	<c>true</c> if the specified <see cref="System.Object"/> is equal to this instance; otherwise, <c>false</c>.
-        /// </returns>
-        public override bool Equals(object obj)
-        {
-            if (ReferenceEquals(null, obj)) return false;
-            if (ReferenceEquals(this, obj)) return true;
-            if (obj.GetType() != typeof (ConfigFile)) return false;
-            return Equals((ConfigFile) obj);
-        }
-
-        /// <summary>
-        /// Returns a hash code for this instance.
-        /// </summary>
-        /// <returns>
-        /// A hash code for this instance, suitable for use in hashing algorithms and data structures like a hash table. 
-        /// </returns>
-        public override int GetHashCode()
-        {
-            return (Id != null ? Id.GetHashCode() : 0);
         }
 
         /// <summary>
@@ -242,15 +177,13 @@ namespace SharpGen.Config
         /// <returns></returns>
         public ContextSetRule FindContextSetById(string contextSetId)
         {
-            if (ContextSets != null)
-                return ContextSets.FirstOrDefault(contextSetRule => contextSetRule.Id == contextSetId);
-            return null;
+            return ContextSets?.FirstOrDefault(contextSetRule => contextSetRule.Id == contextSetId);
         }
 
         /// <summary>
         /// Expands all dynamic variables used inside Bindings and Mappings tags.
         /// </summary>
-        /// <param name="expandDynamicVariable">if set to <c>true</c> [expand dynamic variable].</param>
+        /// <param name="expandDynamicVariable">if set to <c>true</c> expand dynamic variables.</param>
         public void ExpandVariables(bool expandDynamicVariable, Logger logger)
         {
             ExpandVariables(Variables, expandDynamicVariable, logger);
@@ -310,9 +243,8 @@ namespace SharpGen.Config
                 if (keyValue.Name == variableName)
                     return ExpandString(keyValue.Value, false, logger);
             }
-            if (Parent != null)
-                return Parent.GetVariable(variableName, logger);
-            return null;
+
+            return Parent?.GetVariable(variableName, logger);
         }
 
         /// <summary>
@@ -333,36 +265,40 @@ namespace SharpGen.Config
             // Perform Config Variable substitution
             if (ReplaceVariableRegex.Match(result).Success)
             {
-                result = ReplaceVariableRegex.Replace(result, delegate(Match match)
-                                                                {
-                                                                    string name = match.Groups[1].Value;
-                                                                    string localResult = GetVariable(name, logger);
-                                                                    if (localResult == null)
-                                                                        localResult = Environment.GetEnvironmentVariable(name);
-                                                                    if (localResult == null)
-                                                                    {
-                                                                        logger.Error("Unable to substitute config/environment variable $({0}). Variable is not defined", name);
-                                                                        return "";
-                                                                    }
-                                                                    return localResult;
-                                                                });
+                result = ReplaceVariableRegex.Replace(
+                    result,
+                    match =>
+                    {
+                        string name = match.Groups[1].Value;
+                        string localResult = GetVariable(name, logger);
+                        if (localResult == null)
+                            localResult = Environment.GetEnvironmentVariable(name);
+                        if (localResult == null)
+                        {
+                            logger.Error(LoggingCodes.UnkownVariable, "Unable to substitute config/environment variable $({0}). Variable is not defined", name);
+                            return "";
+                        }
+                        return localResult;
+                    });
             }
 
             // Perform Dynamic Variable substitution
             if (expandDynamicVariable && ReplaceDynamicVariableRegex.Match(result).Success)
             {
-                result = ReplaceDynamicVariableRegex.Replace(result, delegate(Match match)
-                                                                         {
-                                                                             string name = match.Groups[1].Value;
-                                                                             string localResult;
-                                                                             if (!GetRoot().DynamicVariables.TryGetValue(name, out localResult))
-                                                                             {
-                                                                                 logger.Error("Unable to substitute dynamic variable #({0}). Variable is not defined", name);
-                                                                                 return "";
-                                                                             }
-                                                                             localResult = localResult.Trim('"');
-                                                                             return localResult;
-                                                                         });
+                result = ReplaceDynamicVariableRegex.Replace(
+                    result,
+                    match =>
+                    {
+                        string name = match.Groups[1].Value;
+                        string localResult;
+                        if (!GetRoot().DynamicVariables.TryGetValue(name, out localResult))
+                        {
+                            logger.Error(LoggingCodes.UnkownDynamicVariable, "Unable to substitute dynamic variable #({0}). Variable is not defined", name);
+                            return "";
+                        }
+                        localResult = localResult.Trim('"');
+                        return localResult;
+                    });
             }           
             return result;
         }
@@ -398,36 +334,10 @@ namespace SharpGen.Config
             Files.Clear();
 
             // Add this mapping file
-            GetRoot().MapIdToFile.Add(Id, this);            
+            GetRoot().mapIdToFile.Add(Id, this);            
         }
 
-        public IEnumerable<ConfigFile> ConfigFilesLoaded
-        {
-            get { return GetRoot().MapIdToFile.Values; }
-        }
-
-
-        /// <summary>
-        /// Gets the latest timestamp from a set of config files.
-        /// </summary>
-        /// <param name="files">The files to check.</param>
-        /// <returns>The latest timestamp from a set of config files</returns>
-        public static DateTime GetLatestTimestamp(IEnumerable<ConfigFile> files)
-        {
-            var latestTimestmap = new DateTime(0);
-            if (files.Any(cfg => cfg.AbsoluteFilePath == null))
-            {
-                return DateTime.Now;
-            }
-
-            foreach (var configFile in files)
-            {
-                var fileTime = File.GetLastWriteTime(configFile.AbsoluteFilePath);
-                if (fileTime > latestTimestmap)
-                    latestTimestmap = fileTime;
-            }
-            return latestTimestmap;
-        }
+        public IReadOnlyCollection<ConfigFile> ConfigFilesLoaded => GetRoot().mapIdToFile.Values;
 
         /// <summary>
         /// Loads the specified config file attached to a parent config file.
@@ -437,19 +347,25 @@ namespace SharpGen.Config
         /// <returns>The loaded config</returns>
         private static ConfigFile Load(ConfigFile parent, string file, string[] macros, IEnumerable<KeyValue> variables, Logger logger)
         {
+            if(!File.Exists(file))
+            {
+                logger.Error(LoggingCodes.ConfigNotFound, "Configuration file {0} not found.", file);
+                return null;
+            }
+            
             var deserializer = new XmlSerializer(typeof(ConfigFile));
             ConfigFile config = null;
             try
             {
                 logger.PushLocation(file);
+
                 config = (ConfigFile)deserializer.Deserialize(new StringReader(Preprocessor.Preprocess(File.ReadAllText(file), macros)));
 
-                if (config != null)
-                    config.PostLoad(parent, file, macros, variables, logger);
+                config?.PostLoad(parent, file, macros, variables, logger);
             }
             catch (Exception ex)
             {
-                logger.Error("Unable to parse file [{0}]", ex, file);
+                logger.Error(LoggingCodes.UnableToParseConfig, "Unable to parse file [{0}]", ex, file);
             }
             finally
             {
@@ -466,7 +382,7 @@ namespace SharpGen.Config
             return root;
         }
 
-        private Dictionary<string,ConfigFile> MapIdToFile = new Dictionary<string, ConfigFile>();
+        private readonly Dictionary<string,ConfigFile> mapIdToFile = new Dictionary<string, ConfigFile>();
 
         private void Verify(Logger logger)
         {
@@ -475,18 +391,16 @@ namespace SharpGen.Config
             // TODO: verify Depends
             foreach (var depend in Depends)
             {
-                if (!GetRoot().MapIdToFile.ContainsKey(depend))
-                    throw new InvalidOperationException("Unable to resolve dependency [" + depend + "] for config file [" + Id + "]");
+                if (!GetRoot().mapIdToFile.ContainsKey(depend))
+                    logger.Error(LoggingCodes.MissingConfigDependency, $"Unable to resolve dependency [{depend}] for config file [{Id}]");
             }
 
             foreach (var includeDir in IncludeDirs)
             {
-
-
                 includeDir.Path = ExpandString(includeDir.Path, false, logger);
 
                 if (!includeDir.Path.StartsWith("=") && !Directory.Exists(includeDir.Path))
-                    throw new DirectoryNotFoundException("Directory [" + includeDir.Path + "] not found in config file [" + Id + "]");
+                    logger.Error(LoggingCodes.IncludeDirectoryNotFound, $"Include directory {includeDir.Path} from config file [{Id}] not found");
             }
 
             // Verify all dependencies
@@ -517,10 +431,9 @@ namespace SharpGen.Config
 
         public void Write(string file)
         {
-            using (var output = new FileStream(file, FileMode.Create))
-            {
-                Write(output); 
-            }
+            using var output = File.Create(file);
+
+            Write(output);
         }
 
         /// <summary>
@@ -531,7 +444,7 @@ namespace SharpGen.Config
         {
             //Create our own namespaces for the output
             var ns = new XmlSerializerNamespaces();
-            ns.Add("", NS);
+            ns.Add("", XmlNamespace);
             var serializer = new XmlSerializer(typeof(ConfigFile));
             serializer.Serialize(writer, this, ns);
         }
@@ -542,6 +455,7 @@ namespace SharpGen.Config
         /// <returns>
         /// A <see cref="System.String"/> that represents this instance.
         /// </returns>
+        [ExcludeFromCodeCoverage]
         public override string ToString()
         {
             return string.Format(System.Globalization.CultureInfo.InvariantCulture, "config {0}", Id);

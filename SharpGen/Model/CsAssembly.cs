@@ -36,12 +36,9 @@ namespace SharpGen.Model
     [DataContract(Name = "Assembly")]
     public class CsAssembly : CsBase
     {
-        private List<ConfigFile> _configFilesLinked;
-
         public CsAssembly()
         {
             Interop = new InteropManager();
-            _configFilesLinked = new List<ConfigFile>();
         }
 
         /// <summary>
@@ -64,25 +61,6 @@ namespace SharpGen.Model
         [DataMember]
         public bool NeedsToBeUpdated { get; set; }
         
-        /// <summary>
-        /// Gets config files linked to this assembly
-        /// </summary>
-        /// <value>The config files linked to this assembly.</value>
-        public IReadOnlyList<ConfigFile> ConfigFilesLinked => _configFilesLinked;
-
-        /// <summary>
-        /// Adds linked config file to this instance.
-        /// </summary>
-        /// <param name="configFileToAdd">The config file to add.</param>
-        public void AddLinkedConfigFile(ConfigFile configFileToAdd)
-        {
-            foreach (var configFile in _configFilesLinked)
-                if (configFile.Id == configFileToAdd.Id)
-                    return;
-
-            _configFilesLinked.Add(configFileToAdd);
-        }
-
         /// <summary>
         /// Gets the name of the check file for this assembly.
         /// </summary>
@@ -107,5 +85,95 @@ namespace SharpGen.Model
         /// <value>The interop.</value>
         [DataMember]
         public InteropManager Interop { get; set; }
+
+        /// <summary>
+        /// Reads the module from the specified file.
+        /// </summary>
+        /// <param name="file">The file.</param>
+        /// <returns>A C++ module</returns>
+        public static CsAssembly Read(string file)
+        {
+            using (var input = new FileStream(file, FileMode.Open))
+            {
+                return Read(input);
+            }
+        }
+
+        /// <summary>
+        /// Reads the module from the specified input.
+        /// </summary>
+        /// <param name="input">The input.</param>
+        /// <returns>A C++ module</returns>
+        public static CsAssembly Read(Stream input)
+        {
+            var ds = GetSerializer();
+
+            using (XmlReader w = XmlReader.Create(input))
+            {
+                return ds.ReadObject(w) as CsAssembly;
+            }
+        }
+
+        private static DataContractSerializer GetSerializer()
+        {
+            var knownTypes = new[]
+            {
+                        typeof(CsAssembly),
+                        typeof(CsNamespace),
+                        typeof(CsInterface),
+                        typeof(CsGroup),
+                        typeof(CsStruct),
+                        typeof(CsInterfaceArray),
+                        typeof(CsEnum),
+                        typeof(CsEnumItem),
+                        typeof(CsFunction),
+                        typeof(CsMethod),
+                        typeof(CsField),
+                        typeof(CsParameter),
+                        typeof(CsProperty),
+                        typeof(CsVariable),
+                        typeof(CsTypeBase),
+                        typeof(CsReturnValue),
+                        typeof(CsMarshalBase),
+                        typeof(CsFundamentalType),
+                        typeof(CsUndefinedType),
+                        typeof(StructSizeRelation),
+                        typeof(ConstantValueRelation),
+                        typeof(LengthRelation)
+            };
+
+            return new DataContractSerializer(typeof(CsAssembly), new DataContractSerializerSettings
+            {
+                KnownTypes = knownTypes,
+                PreserveObjectReferences = true
+            });
+        }
+
+        /// <summary>
+        /// Writes this instance to the specified file.
+        /// </summary>
+        /// <param name="file">The file.</param>
+        public void Write(string file)
+        {
+            using (var output = new FileStream(file, FileMode.Create))
+            {
+                Write(output);
+            }
+        }
+
+        /// <summary>
+        /// Writes this instance to the specified output.
+        /// </summary>
+        /// <param name="output">The output.</param>
+        public void Write(Stream output)
+        {
+            var ds = GetSerializer();
+
+            var settings = new XmlWriterSettings { Indent = true };
+            using (XmlWriter w = XmlWriter.Create(output, settings))
+            {
+                ds.WriteObject(w, this);
+            }
+        }
     }
 }

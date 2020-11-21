@@ -13,42 +13,51 @@ namespace SharpGen.Transform
         private static readonly Regex RegexLink = new Regex(@"\{\{(.*?)}}", RegexOptions.Compiled);
         private static readonly Regex RegexSpaceBegin = new Regex(@"^\s*(.*)", RegexOptions.Compiled);
         
-        public static IEnumerable<string> GetDocItems(this IDocumentationLinker aggregator, CsBase element)
+        public static IEnumerable<string> GetDocItems(this IDocumentationLinker aggregator, ExternalDocCommentsReader reader, CsBase element)
         {
             var docItems = new List<string>();
 
-            var description = element.Description;
-            var remarks = element.Remarks;
+            var externalCommentsPath = reader.GetDocumentWithExternalComments(element);
 
-            description = RegexSpaceBegin.Replace(description, "$1");
-
-            description = RegexLink.Replace(description, aggregator.ReplaceCRefReferences);
-            // evaluator => "<see cref=\"$1\"/>"
-
-            docItems.Add("<summary>");
-            docItems.AddRange(description.Split('\n'));
-            docItems.Add("</summary>");
-
-            element.FillDocItems(docItems, aggregator);
-
-            if (!string.IsNullOrEmpty(remarks))
+            if (externalCommentsPath == null)
             {
-                remarks = RegexSpaceBegin.Replace(remarks, "$1");
-                remarks = RegexLink.Replace(remarks, aggregator.ReplaceCRefReferences);
+                var description = element.Description;
+                var remarks = element.Remarks;
 
-                docItems.Add("<remarks>");
-                docItems.AddRange(remarks.Split('\n'));
-                docItems.Add("</remarks>");
+                description = RegexSpaceBegin.Replace(description, "$1");
+
+                description = RegexLink.Replace(description, aggregator.ReplaceCRefReferences);
+                // evaluator => "<see cref=\"$1\"/>"
+
+                docItems.Add("<summary>");
+                docItems.AddRange(description.Split('\n'));
+                docItems.Add("</summary>");
+
+                element.FillDocItems(docItems, aggregator);
+
+                if (!string.IsNullOrEmpty(remarks))
+                {
+                    remarks = RegexSpaceBegin.Replace(remarks, "$1");
+                    remarks = RegexLink.Replace(remarks, aggregator.ReplaceCRefReferences);
+
+                    docItems.Add("<remarks>");
+                    docItems.AddRange(remarks.Split('\n'));
+                    docItems.Add("</remarks>");
+                } 
+            }
+            else
+            {
+                docItems.Add($"<include file='{externalCommentsPath}' path=\"{reader.GetCodeCommentsXPath(element)}/*\"");
             }
 
-            if (element.CppElement != null)
+            if (element.CppElementName != null)
             {
                 if (element.DocId != null)
                 {
-                    docItems.Add("<msdn-id>" + Utilities.EscapeXml(element.DocId) + "</msdn-id>");
+                    docItems.Add("<doc-id>" + EscapeXml(element.DocId) + "</doc-id>");
                 }
-                docItems.Add("<unmanaged>" + Utilities.EscapeXml(element.DocUnmanagedName) + "</unmanaged>");
-                docItems.Add("<unmanaged-short>" + Utilities.EscapeXml(element.DocUnmanagedShortName) + "</unmanaged-short>");
+                docItems.Add("<unmanaged>" + EscapeXml(element.DocUnmanagedName) + "</unmanaged>");
+                docItems.Add("<unmanaged-short>" + EscapeXml(element.DocUnmanagedShortName) + "</unmanaged-short>");
             }
 
             return docItems;
@@ -98,6 +107,16 @@ namespace SharpGen.Transform
             if (csName.StartsWith("<"))
                 return csName;
             return string.Format(CultureInfo.InvariantCulture, "<see cref=\"{0}\"/>", csName);
+        }
+
+        /// <summary>
+        /// Escapes the xml/html text in order to use it inside xml.
+        /// </summary>
+        /// <param name="stringToEscape">The string to escape.</param>
+        /// <returns></returns>
+        private static string EscapeXml(string stringToEscape)
+        {
+            return stringToEscape.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;").Replace("'", "&apos;");
         }
     }
 }

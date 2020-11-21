@@ -17,441 +17,84 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-using Microsoft.Win32;
-using SharpGen.Config;
-using SharpGen.Logging;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Text.RegularExpressions;
 
 namespace SharpGen.Parser
 {
-    /// <summary>
-    /// CastXML front end for command line.
-    /// see https://github.com/CastXML/CastXML
-    /// </summary>
-    public class CastXml
+    public static class CastXml
     {
-        private static readonly Regex MatchError = new Regex("error:");
-
         /// <summary>
-        /// GccXml tag for FundamentalType
+        ///     GccXml tag for FundamentalType
         /// </summary>
         public const string TagFundamentalType = "FundamentalType";
 
         /// <summary>
-        /// GccXml tag for Enumeration
+        ///     GccXml tag for Enumeration
         /// </summary>
         public const string TagEnumeration = "Enumeration";
 
         /// <summary>
-        /// GccXml tag for Struct
+        ///     GccXml tag for Struct
         /// </summary>
         public const string TagStruct = "Struct";
 
         /// <summary>
-        /// GccXml tag for Field
+        ///     CastXML tag for Class
+        /// </summary>
+        public const string TagClass = "Class";
+
+        /// <summary>
+        ///     GccXml tag for Field
         /// </summary>
         public const string TagField = "Field";
 
         /// <summary>
-        /// GccXml tag for Union
+        ///     GccXml tag for Union
         /// </summary>
         public const string TagUnion = "Union";
 
         /// <summary>
-        /// GccXml tag for Typedef
+        ///     GccXml tag for Typedef
         /// </summary>
         public const string TagTypedef = "Typedef";
 
         /// <summary>
-        /// GccXml tag for Function
+        ///     GccXml tag for Function
         /// </summary>
         public const string TagFunction = "Function";
 
         /// <summary>
-        /// GccXml tag for PointerType
+        ///     GccXml tag for PointerType
         /// </summary>
         public const string TagPointerType = "PointerType";
 
         /// <summary>
-        /// GccXml tag for ArrayType
+        ///     GccXml tag for ArrayType
         /// </summary>
         public const string TagArrayType = "ArrayType";
 
         /// <summary>
-        /// GccXml tag for ReferenceType
+        ///     GccXml tag for ReferenceType
         /// </summary>
         public const string TagReferenceType = "ReferenceType";
 
         /// <summary>
-        /// GccXml tag for CvQualifiedType
+        ///     GccXml tag for CvQualifiedType
         /// </summary>
         public const string TagCvQualifiedType = "CvQualifiedType";
 
         /// <summary>
-        /// GccXml tag for Namespace
+        ///     GccXml tag for Namespace
         /// </summary>
         public const string TagNamespace = "Namespace";
 
         /// <summary>
-        /// GccXml tag for Variable
+        ///     GccXml tag for Variable
         /// </summary>
         public const string TagVariable = "Variable";
 
         /// <summary>
-        /// GccXml tag for FunctionType
+        ///     GccXml tag for FunctionType
         /// </summary>
         public const string TagFunctionType = "FunctionType";
-
-        /// <summary>
-        /// Gets or sets the executable path of gccxml.exe.
-        /// </summary>
-        /// <value>The executable path.</value>
-        public string ExecutablePath { get; }
-
-        public string OutputPath { get; set; }
-
-        /// <summary>
-        /// Gets or sets the include directory list.
-        /// </summary>
-        /// <value>The include directory list.</value>
-        private List<IncludeDirRule> IncludeDirectoryList { get; } = new List<IncludeDirRule>();
-
-        public Logger Logger { get; }
-
-        /// <summary>
-        /// List of error filters regexp.
-        /// </summary>
-        private List<Regex> FilterErrors { get; } = new List<Regex>();
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="CastXml"/> class.
-        /// </summary>
-        public CastXml(Logger logger, string executablePath)
-        {
-            Logger = logger;
-            ExecutablePath = executablePath;
-        }
-
-        public void Configure(ConfigFile config)
-        {
-            // Configure gccxml with include directory
-            foreach (var configFile in config.ConfigFilesLoaded)
-            {
-                // Add all include directories
-                foreach (var includeDir in configFile.IncludeDirs)
-                    IncludeDirectoryList.Add(includeDir);
-
-                foreach (var includeRule in configFile.Includes)
-                {
-                    foreach (var filterError in includeRule.FilterErrors)
-                    {
-                        AddFilterError(includeRule.File.ToLower(), filterError);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Adds a filter error that will ignore a particular error from gccxml.
-        /// </summary>
-        /// <param name="file">The headerFile.</param>
-        /// <param name="regexpError">a regexp that filters a particular gccxml error message.</param>
-        private void AddFilterError(string file, string regexpError)
-        {
-            var fullRegexpError = @"[\\/]" + Regex.Escape(file) + ":.*" + regexpError;
-            FilterErrors.Add(new Regex(fullRegexpError));
-        }
-
-        /// <summary>
-        /// Preprocesses the specified header file.
-        /// </summary>
-        /// <param name="headerFile">The header file.</param>
-        /// <param name="handler">The handler.</param>
-        public void Preprocess(string headerFile, DataReceivedEventHandler handler)
-        {
-            Logger.RunInContext("castxml", () =>
-                    {
-                        if (!File.Exists(ExecutablePath))
-                            Logger.Fatal("castxml.exe not found from path: [{0}]", ExecutablePath);
-
-                        if (!File.Exists(headerFile))
-                            Logger.Fatal("C++ Header file [{0}] not found", headerFile);
-
-                        using (var currentProcess = new Process())
-                        {
-                            var startInfo = new ProcessStartInfo(ExecutablePath)
-                            {
-                                RedirectStandardOutput = true,
-                                RedirectStandardError = true,
-                                UseShellExecute = false,
-                                CreateNoWindow = true,
-                                WorkingDirectory = OutputPath
-                            };
-
-                            var arguments = GetCastXmlArgs();
-                            arguments += " -E -dD";
-                            var builder = new System.Text.StringBuilder();
-                            builder.Append(arguments);
-
-                            foreach (var directory in GetIncludePaths())
-                            {
-                                builder.Append(" ").Append(directory);
-                            }
-                            arguments = builder.ToString();
-
-                            startInfo.Arguments = arguments + " " + headerFile;
-                            Logger.Message($"Preprocessor arguments: {builder}");
-                            currentProcess.StartInfo = startInfo;
-                            currentProcess.ErrorDataReceived += ProcessErrorFromHeaderFile;
-                            currentProcess.OutputDataReceived += handler;
-                            currentProcess.Start();
-                            currentProcess.BeginOutputReadLine();
-                            currentProcess.BeginErrorReadLine();
-
-                            currentProcess.WaitForExit();
-                        }
-
-                    });
-        }
-
-        private List<string> GetIncludePaths()
-        {
-            var paths = new List<string>();
-
-            foreach (var directory in IncludeDirectoryList)
-            {
-                var path = directory.Path;
-
-                // Is Using registry?
-                if (path.StartsWith("="))
-                {
-                    bool success;
-                    (path, success) = ResolveRegistryDirectory(directory);
-
-                    if (!success)
-                        continue;
-                }
-
-                if (directory.IsOverride)
-                {
-                    paths.Add("-I\"" + path.TrimEnd('\\') + "\"");
-                }
-                else
-                {
-                    paths.Add("-isystem\"" + path.TrimEnd('\\') + "\"");
-                }
-            }
-
-            foreach (var path in paths)
-            {
-                Logger.Message("Path used for castxml [{0}]", path);
-            }
-
-            return paths;
-        }
-
-        private (string path, bool success) ResolveRegistryDirectory(IncludeDirRule directory)
-        {
-            string path = null;
-            var success = true;
-            var registryPath = directory.Path.Substring(1);
-            var indexOfSubPath = registryPath.IndexOf(";");
-            var subPath = "";
-            if (indexOfSubPath >= 0)
-            {
-                subPath = registryPath.Substring(indexOfSubPath + 1);
-                registryPath = registryPath.Substring(0, indexOfSubPath);
-            }
-            var indexOfKey = registryPath.LastIndexOf("\\");
-            var subKeyStr = registryPath.Substring(indexOfKey + 1);
-            registryPath = registryPath.Substring(0, indexOfKey);
-
-            var indexOfHive = registryPath.IndexOf("\\");
-            var hiveStr = registryPath.Substring(0, indexOfHive).ToUpper();
-            registryPath = registryPath.Substring(indexOfHive + 1);
-
-            try
-            {
-                var hive = RegistryHive.LocalMachine;
-                switch (hiveStr)
-                {
-                    case "HKEY_LOCAL_MACHINE":
-                        hive = RegistryHive.LocalMachine;
-                        break;
-                    case "HKEY_CURRENT_USER":
-                        hive = RegistryHive.CurrentUser;
-                        break;
-                    case "HKEY_CURRENT_CONFIG":
-                        hive = RegistryHive.CurrentConfig;
-                        break;
-                }
-                var rootKey = RegistryKey.OpenBaseKey(hive, RegistryView.Registry32);
-                var subKey = rootKey.OpenSubKey(registryPath);
-                if (subKey == null)
-                {
-                    Logger.Error("Unable to locate key [{0}] in registry", registryPath);
-                    success = false;
-
-                }
-                path = Path.Combine(subKey.GetValue(subKeyStr).ToString(), subPath);
-                Logger.Message($"Resolved registry path {directory.Path} to {path}");
-            }
-            catch (Exception)
-            {
-                Logger.Error("Unable to locate key [{0}] in registry", registryPath);
-                success = false;
-            }
-            return (path, success);
-        }
-
-        /// <summary>
-        /// Processes the specified header headerFile.
-        /// </summary>
-        /// <param name="headerFile">The header headerFile.</param>
-        /// <returns></returns>
-        public StreamReader Process(string headerFile)
-        {
-            StreamReader result = null;
-
-            Logger.RunInContext("castxml", () =>
-            {
-                if (!File.Exists(ExecutablePath)) Logger.Fatal("castxml.exe not found from path: [{0}]", ExecutablePath);
-
-                if (!File.Exists(headerFile)) Logger.Fatal("C++ Header file [{0}] not found", headerFile);
-
-                var xmlFile = Path.ChangeExtension(headerFile, "xml");
-
-                using (var currentProcess = new Process())
-                {
-                    var startInfo = new ProcessStartInfo(ExecutablePath)
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WorkingDirectory = OutputPath
-                    };
-
-                    // Delete any previously generated xml file
-                    File.Delete(xmlFile);
-                    
-                    var builder = new System.Text.StringBuilder();
-                    builder.Append(GetCastXmlArgs());
-                    builder.Append(" -o ");
-                    builder.Append(xmlFile);
-
-                    foreach (var directory in GetIncludePaths())
-                    {
-                        builder.Append(" ").Append(directory);
-                    }
-
-                    var arguments = builder.ToString();
-
-                    startInfo.Arguments = arguments + " " + headerFile;
-
-                    Logger.Message($"Processor arguments: {builder}");
-                    currentProcess.StartInfo = startInfo;
-                    currentProcess.ErrorDataReceived += ProcessErrorFromHeaderFile;
-                    currentProcess.OutputDataReceived += ProcessOutputFromHeaderFile;
-                    currentProcess.Start();
-                    currentProcess.BeginOutputReadLine();
-                    currentProcess.BeginErrorReadLine();
-
-                    currentProcess.WaitForExit();
-                }
-
-                if (!File.Exists(xmlFile) || Logger.HasErrors)
-                {
-                    Logger.Error("Unable to generate XML file with castxml [{0}]. Check previous errors.", xmlFile);
-                }
-                else
-                {
-                    result = File.OpenText(xmlFile);
-                }
-            });
-
-            return result;
-        }
-
-        private static string GetCastXmlArgs()
-        {
-            var arguments = "";
-            arguments += " --castxml-gccxml";
-            arguments += " -x c++ -std=c++11 -fmsc-version=1900 -fms-extensions -fms-compatibility";
-            arguments += " -Wno-microsoft-enum-value -Wmacro-redefined -Wno-invalid-token-paste -Wno-ignored-attributes";
-            return arguments;
-        }
-
-        // E:/Code/Microsoft DirectX SDK (June 2010)//include/xaudio2fx.h:68:1: error:
-        private static Regex matchFileErrorRegex = new Regex(@"^(.*):(\d+):(\d+):\s+error:(.*)");
-
-        /// <summary>
-        /// Processes the error from header file.
-        /// </summary>
-        /// <param name="sender">The sender.</param>
-        /// <param name="e">The <see cref="System.Diagnostics.DataReceivedEventArgs"/> instance containing the event data.</param>
-        void ProcessErrorFromHeaderFile(object sender, DataReceivedEventArgs e)
-        {
-            bool popContext = false;
-            try
-            {
-                if (e.Data != null)
-                {
-
-                    var matchError = matchFileErrorRegex.Match(e.Data);
-
-                    bool lineFiltered = false;
-                    foreach (var filterError in FilterErrors)
-                    {
-                        if (filterError.Match(e.Data).Success)
-                        {
-                            lineFiltered = true;
-                            break;
-                        }
-
-                    }
-                    string errorText = e.Data;
-
-                    if (matchError.Success)
-                    {
-                        Logger.PushLocation(matchError.Groups[1].Value, int.Parse(matchError.Groups[2].Value), int.Parse(matchError.Groups[3].Value));
-                        popContext = true;
-                        errorText = matchError.Groups[4].Value;
-                    }
-
-                    if (!lineFiltered)
-                    {
-                        if (MatchError.Match(e.Data).Success)
-                            Logger.Error(errorText);
-                        else
-                            Logger.Warning(errorText);
-                    }
-                    else
-                    {
-                        Logger.Warning(errorText);
-                    }
-                }
-            }
-            finally
-            {
-                if (popContext)
-                    Logger.PopLocation();
-            }
-        }
-
-        /// <summary>
-        /// Processes the output from header file.
-        /// </summary>
-        /// <param name="sender">The sender.</param>
-        /// <param name="e">The <see cref="System.Diagnostics.DataReceivedEventArgs"/> instance containing the event data.</param>
-        void ProcessOutputFromHeaderFile(object sender, DataReceivedEventArgs e)
-        {
-            if (e.Data != null)
-                Logger.Message(e.Data);
-        }
     }
 }

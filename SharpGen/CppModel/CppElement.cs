@@ -17,6 +17,7 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+using SharpGen.Config;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -32,16 +33,6 @@ namespace SharpGen.CppModel
     /// </summary>
     public class CppElement
     {
-        /// <summary>
-        ///   Delegate Modifier
-        /// </summary>
-        public delegate bool ProcessModifier(Regex regex, CppElement cppElement);
-
-        /// <summary>
-        /// Current context used by the finder.
-        /// </summary>
-        private List<string> _findContext;
-
         /// <summary>
         /// Gets or sets the name.
         /// </summary>
@@ -84,7 +75,7 @@ namespace SharpGen.CppModel
         /// </summary>
         /// <value>The tag.</value>
         [XmlIgnore]
-        public object Tag { get; set; }
+        public MappingRule Rule { get; set; }
 
         /// <summary>
         /// Gets the parent include.
@@ -95,26 +86,10 @@ namespace SharpGen.CppModel
         {
             get
             {
-                CppElement cppInclude = Parent;
+                var cppInclude = Parent;
                 while (cppInclude != null && !(cppInclude is CppInclude))
                     cppInclude = cppInclude.Parent;
                 return cppInclude as CppInclude;
-            }
-        }
-
-        /// <summary>
-        /// Gets the parent root C++ element.
-        /// </summary>
-        /// <value>The parent root.</value>
-        [XmlIgnore]
-        public CppElement ParentRoot
-        {
-            get
-            {
-                CppElement cppRoot = this;
-                while (cppRoot.Parent != null)
-                    cppRoot = cppRoot.Parent;
-                return cppRoot;
             }
         }
 
@@ -164,24 +139,11 @@ namespace SharpGen.CppModel
         [XmlArrayItem(typeof (CppMethod))]
         [XmlArrayItem(typeof (CppParameter))]
         [XmlArrayItem(typeof (CppStruct))]
-        [XmlArrayItem(typeof (CppType))]
+        [XmlArrayItem(typeof(CppReturnValue))]
+        [XmlArrayItem(typeof(CppMarshallable))]
         public List<CppElement> Items { get; set; }
 
-        /// <summary>
-        ///   Gets the context find list.
-        /// </summary>
-        /// <value>The context find list.</value>
-        private List<string> ContextFindList
-        {
-            get
-            {
-                if (_findContext == null)
-                    _findContext = new List<string>();
-                return _findContext;
-            }
-        }
-
-        protected virtual IEnumerable<CppElement> AllItems
+        protected internal virtual IEnumerable<CppElement> AllItems
         {
             get { return Iterate<CppElement>(); }
         }
@@ -192,19 +154,9 @@ namespace SharpGen.CppModel
             get { return Items == null || Items.Count == 0; }
         }
 
-        public T GetTagOrDefault<T>() where T : new()
+        public MappingRule GetMappingRule()
         {
-            return (T) (Tag ?? new T());
-        }
-
-        public static string ShortName<T>() where T : CppElement
-        {
-            var type = typeof (T);
-            string tagname = type.Name;
-            var attribute = type.GetTypeInfo().GetCustomAttributes<DataContractAttribute>(false).FirstOrDefault();
-            if (attribute != null)
-                tagname = attribute.Name;
-            return tagname;
+            return Rule ?? (Rule = new MappingRule());
         }
 
         /// <summary>
@@ -216,13 +168,12 @@ namespace SharpGen.CppModel
             if (element.Parent != null)
                 element.Parent.Remove(element);
             element.Parent = this;
-            GetSafeItems().Add(element);
-        }
+            if (Items == null)
+            {
+                Items = new List<CppElement>();
+            }
 
-        public void Add<T>(IEnumerable<T> elements) where T : CppElement
-        {
-            foreach (var cppElement in elements)
-                Add(cppElement);
+            Items.Add(element);
         }
 
         /// <summary>
@@ -232,41 +183,10 @@ namespace SharpGen.CppModel
         public void Remove(CppElement element)
         {
             element.Parent = null;
-            GetSafeItems().Remove(element);
-        }
-
-        private List<CppElement> GetSafeItems()
-        {
-            if (Items == null)
-                Items = new List<CppElement>();
-            return Items;
-        }
-
-        /// <summary>
-        ///   Adds a context to the finder.
-        /// </summary>
-        /// <param name = "contextName">Name of the context.</param>
-        public void AddContextFind(string contextName)
-        {
-            ContextFindList.Add(contextName);
-        }
-
-        /// <summary>
-        ///   Adds a set of context to the finder.
-        /// </summary>
-        /// <param name = "contextNames">The context names.</param>
-        public void AddContextRangeFind(IEnumerable<string> contextNames)
-        {
-            foreach (var contextName in contextNames)
-                AddContextFind(contextName);
-        }
-
-        /// <summary>
-        ///   Clears the context finder.
-        /// </summary>
-        public void ClearContextFind()
-        {
-            ContextFindList.Clear();
+            if (Items != null)
+            {
+                Items.Remove(element);
+            }
         }
 
         /// <summary>
@@ -279,162 +199,21 @@ namespace SharpGen.CppModel
             return Items == null ? Enumerable.Empty<T>() : Items.OfType<T>();
         }
 
-        /// <summary>
-        ///   Finds the first element by regex.
-        /// </summary>
-        /// <typeparam name = "T"></typeparam>
-        /// <param name = "regex">The regex.</param>
-        /// <returns></returns>
-        public T FindFirst<T>(string regex) where T : CppElement
-        {
-            return Find<T>(regex).FirstOrDefault();
-        }
-
-        /// <summary>
-        ///   Finds the specified elements by regex.
-        /// </summary>
-        /// <typeparam name = "T"></typeparam>
-        /// <param name = "regex">The regex.</param>
-        /// <returns></returns>
-        public IEnumerable<T> Find<T>(string regex) where T : CppElement
-        {
-            var cppElements = new List<T>();
-            bool modifyParent = false;
-            Find(new Regex("^" + regex + "$"), cppElements, null, ref modifyParent);
-            return cppElements.OfType<T>();
-        }
-
-        /// <summary>
-        ///   Remove recursively elements matching the regex of type T
-        /// </summary>
-        /// <typeparam name = "T">the T type to match</typeparam>
-        /// <param name = "regex">the regex to match</param>
-        public void Remove<T>(string regex) where T : CppElement
-        {
-            Modify<T>(regex, (pathREgex, element) => true);
-        }
-
-        /// <summary>
-        ///   Modifies the specified elements by regex with the specified modifier.
-        /// </summary>
-        /// <typeparam name = "T"></typeparam>
-        /// <param name = "regex">The regex.</param>
-        /// <param name = "modifier">The modifier.</param>
-        public void Modify<T>(string regex, ProcessModifier modifier) where T : CppElement
-        {
-            var cppElements = new List<T>();
-            bool modifyParent = regex.StartsWith("#");
-            regex = regex.TrimStart('#');
-            regex = "^" + regex + "$";
-            Find(new Regex(regex), cppElements, modifier, ref modifyParent);
-        }
-
-        /// <summary>
-        ///   Strips the regex. Removes ^ and $ at the end of the string
-        /// </summary>
-        /// <param name = "regex">The regex.</param>
-        /// <returns></returns>
-        public static string StripRegex(string regex)
-        {
-            string friendlyRegex = regex;
-            // Remove ^ and $
-            if (friendlyRegex.StartsWith("^"))
-                friendlyRegex = friendlyRegex.Substring(1);
-            if (friendlyRegex.EndsWith("$"))
-                friendlyRegex = friendlyRegex.Substring(0, friendlyRegex.Length - 1);
-            return friendlyRegex;
-        }
-
-        /// <summary>
-        ///   Finds all elements by regex.
-        /// </summary>
-        /// <param name = "regex">The regex.</param>
-        /// <returns></returns>
-        public IEnumerable<CppElement> FindAll(string regex)
-        {
-            return Find<CppElement>(regex);
-        }
-
-        /// <summary>
-        /// Finds the specified elements by regex and modifier.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="regex">The regex.</param>
-        /// <param name="toAdd">To add.</param>
-        /// <param name="modifier">The modifier.</param>
-        /// <param name="modifyParent">if set to <c>true</c> [modify parent].</param>
-        /// <returns></returns>
-        private bool Find<T>(Regex regex, List<T> toAdd, ProcessModifier modifier, ref bool modifyParent) where T : CppElement
-        {
-            bool isToRemove = false;
-            string path = FullName;
-
-            var elementToModify = modifyParent ? Parent : this;
-
-            if ((elementToModify is T) && path != null && regex.Match(path).Success)
-            {
-                if (toAdd != null)
-                    toAdd.Add((T)elementToModify);
-
-                if (modifier != null)
-                {
-                    isToRemove = modifier(regex, elementToModify);
-                }
-            }
-
-            var elementsToRemove = new List<CppElement>();
-
-            // Force _findContext to reverse to null if not used anymore
-            if (_findContext != null && _findContext.Count == 0)
-                _findContext = null;
-
-            if (_findContext == null)
-            {
-                // Optimized version with findContext
-                foreach (var innerElement in AllItems)
-                {
-                    if (innerElement.Find(regex, toAdd, modifier, ref modifyParent))
-                        elementsToRemove.Add(innerElement);
-                }
-            }
-            else
-            {
-                foreach (var innerElement in AllItems)
-                {
-                    if (_findContext.Contains(innerElement.Name))
-                        if (innerElement.Find(regex, toAdd, modifier, ref modifyParent))
-                            elementsToRemove.Add(innerElement);
-                }
-            }
-
-            // If we are removing the parent using modifyParent flag
-            // Set modifyParent to false after removing in order to avoid recursive remove of all parents
-            if (elementsToRemove.Count > 0 && modifyParent)
-            {
-                modifyParent = false;
-                return true;
-            }
-
-            foreach (var innerElementToRemove in elementsToRemove)
-                Remove(innerElementToRemove);
-
-            return isToRemove;
-        }
-
         protected void ResetParents()
         {
-            foreach (var innerElement in Iterate<CppElement>())
+            foreach (var innerElement in Items)
             {
                 innerElement.Parent = this;
                 innerElement.ResetParents();
             }
         }
 
+        [ExcludeFromCodeCoverage]
         public override string ToString()
         {
             return GetType().Name + " [" + Name + "]";
         }
-
+        
         public virtual string ToShortString()
         {
             return Name;

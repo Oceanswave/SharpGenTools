@@ -133,17 +133,16 @@ namespace SharpGen.Transform
             // 
             int maxSizeOfField = 0;
 
-            bool isInUnion = false;
+            bool isNonSequential = false;
 
             int cumulatedBitOffset = 0;
 
-
             var inheritedStructs = new Stack<CppStruct>();
             var currentStruct = cppStruct;
-            while (currentStruct != null && currentStruct.ParentName != currentStruct.Name)
+            while (currentStruct != null && currentStruct.Base != currentStruct.Name)
             {
                 inheritedStructs.Push(currentStruct);
-                currentStruct = typeRegistry.FindBoundType(currentStruct.ParentName)?.CppElement as CppStruct;
+                currentStruct = typeRegistry.FindBoundType(currentStruct.Base)?.CppElement as CppStruct;
             }
 
             while (inheritedStructs.Count > 0)
@@ -160,28 +159,31 @@ namespace SharpGen.Transform
                     var cppField = (CppField)currentStruct.Items[fieldIndex];
                     Logger.RunInContext(cppField.ToString(), () =>
                     {
-                        var fieldStruct = factory.Create<CsField>(cppField, true);
-                        csStruct.Add(fieldStruct);
+                        var csField = factory.Create(cppField);
+                        csStruct.Add(csField);
 
                         // Get name
-                        fieldStruct.Name = NamingRules.Rename(cppField);
+                        csField.Name = NamingRules.Rename(cppField);
+
+                        var fieldHasMarshalType = csField.PublicType != csField.MarshalType
+                            || (csField.PublicType is CsStruct fieldStruct && fieldStruct.HasMarshalType)
+                            || csField.IsArray;
 
                         // BoolToInt doesn't generate native Marshaling although they have a different marshaller
-                        if (!fieldStruct.IsBoolToInt && fieldStruct.HasMarshalType)
+                        if (((!csField.IsBoolToInt || csField.IsArray) && fieldHasMarshalType) || (csField.Relations?.Count ?? 0) != 0)
                             hasMarshalType = true;
-
 
                         // If last field has same offset, then it's a union
                         // CurrentOffset is not moved
-                        if (isInUnion && previousFieldOffsetIndex != cppField.Offset)
+                        if (isNonSequential && previousFieldOffsetIndex != cppField.Offset)
                         {
                             previousFieldSize = maxSizeOfField;
                             maxSizeOfField = 0;
-                            isInUnion = false;
+                            isNonSequential = false;
                         }
 
                         currentFieldAbsoluteOffset += previousFieldSize;
-                        var fieldAlignment = (fieldStruct.MarshalType ?? fieldStruct.PublicType).CalculateAlignment();
+                        var fieldAlignment = (csField.MarshalType ?? csField.PublicType).CalculateAlignment();
 
                         // If field alignment is < 0, then we have a pointer somewhere so we can't align
                         if (fieldAlignment > 0)
@@ -195,8 +197,7 @@ namespace SharpGen.Transform
                         }
 
                         // Get correct offset (for handling union)
-                        fieldStruct.Offset = currentFieldAbsoluteOffset;
-                        fieldStruct.IsBitField = cppField.IsBitField;
+                        csField.Offset = currentFieldAbsoluteOffset;
 
                         // Handle bit fields : calculate BitOffset and BitMask for this field
                         if (previousFieldOffsetIndex != cppField.Offset)
@@ -207,10 +208,9 @@ namespace SharpGen.Transform
                         {
                             int lastCumulatedBitOffset = cumulatedBitOffset;
                             cumulatedBitOffset += cppField.BitOffset;
-                            fieldStruct.BitMask = ((1 << cppField.BitOffset) - 1);
-                            fieldStruct.BitOffset = lastCumulatedBitOffset;
+                            csField.BitMask = ((1 << cppField.BitOffset) - 1);
+                            csField.BitOffset = lastCumulatedBitOffset;
                         }
-
 
                         var nextFieldIndex = fieldIndex + 1;
                         if ((previousFieldOffsetIndex == cppField.Offset)
@@ -220,14 +220,14 @@ namespace SharpGen.Transform
                             {
                                 maxSizeOfField = 0;
                             }
-                            maxSizeOfField = fieldStruct.SizeOf > maxSizeOfField ? fieldStruct.SizeOf : maxSizeOfField;
-                            isInUnion = true;
+                            maxSizeOfField = csField.Size > maxSizeOfField ? csField.Size : maxSizeOfField;
+                            isNonSequential = true;
                             csStruct.ExplicitLayout = true;
                             previousFieldSize = 0;
                         }
                         else
                         {
-                            previousFieldSize = fieldStruct.SizeOf;
+                            previousFieldSize = csField.Size;
                         }
                         previousFieldOffsetIndex = cppField.Offset;
                     });
@@ -236,7 +236,7 @@ namespace SharpGen.Transform
 
             // In case of explicit layout, check that we can safely generate it on both x86 and x64 (in case of an union
             // using pointers, we can't)
-            if (csStruct.ExplicitLayout)
+            if (!csStruct.HasCustomMarshal && csStruct.ExplicitLayout && !cppStruct.IsUnion)
             {
                 var fieldList = csStruct.Fields.ToList();
                 for(int i = 0; i < fieldList.Count; i++)
@@ -250,7 +250,8 @@ namespace SharpGen.Transform
                         if ((i + 1) < fieldList.Count)
                         {
                             Logger.Error(
-                                "The field [{0}] in structure [{1}] has pointer alignment within a structure that contains an union. An explicit layout cannot be handled on both x86/x64. This structure needs manual layout (remove fields from definition) and write them manually in xml mapping files",
+                                LoggingCodes.NonPortableAlignment,
+                                "The field [{0}] in structure [{1}] has pointer alignment within a structure that requires explicit layout. This situation cannot be handled on both 32-bit and 64-bit architectures. This structure needs manual layout (remove fields from definition) and write them manually in xml mapping files",
                                 field.CppElementName,
                                 csStruct.CppElementName);
                             break;
@@ -259,7 +260,7 @@ namespace SharpGen.Transform
                 }
             }
 
-            csStruct.SizeOf = currentFieldAbsoluteOffset + previousFieldSize;
+            csStruct.SetSize(currentFieldAbsoluteOffset + previousFieldSize);
             csStruct.HasMarshalType = hasMarshalType;
         }
     }

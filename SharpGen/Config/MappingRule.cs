@@ -105,13 +105,7 @@ namespace SharpGen.Config
         [XmlAttribute("name-tmp")]
         public string MappingName { get; set; }
         public bool ShouldSerializeMappingName() { return IsFinalMappingName.HasValue && !IsFinalMappingName.Value; }
-
-        /// <summary>
-        /// Mapping replace
-        /// </summary>
-        [XmlAttribute("replace")]
-        public string Replace { get; set; }
-
+        
         /// <summary>
         /// Mapping name
         /// </summary>
@@ -173,20 +167,21 @@ namespace SharpGen.Config
         public bool? StructCustomNew { get; set; }
         [XmlAttribute("new")]
         public bool _StructCustomNew_ { get { return StructCustomNew.Value; } set { StructCustomNew = value; } } public bool ShouldSerialize_StructCustomNew_() { return StructCustomNew != null; }
-
-        /// <summary>
-        /// True to force a struct with Native marshalling to have the method __MarshalTo generated
-        /// </summary>
-        [XmlIgnore]
-        public bool? StructForceMarshalToToBeGenerated { get; set; }
-        [XmlAttribute("marshalto")]
-        public bool _StructForceMarshalToToBeGenerated_ { get { return StructForceMarshalToToBeGenerated.Value; } set { StructForceMarshalToToBeGenerated = value; } } public bool ShouldSerialize_StructForceMarshalToToBeGenerated_() { return StructForceMarshalToToBeGenerated != null; }
-
+        
         /// <summary>
         /// Mapping type name
         /// </summary>
         [XmlAttribute("type")]
         public string MappingType { get; set; }
+
+        /// <summary>
+        /// Set to true to override the type used to natively represent this member when marshalling with the mapping type
+        /// </summary>
+        [XmlIgnore]
+        public bool? OverrideNativeType { get; set; }
+        [XmlAttribute("override-native-type")]
+        public bool _OverrideNativeType_ { get { return OverrideNativeType.Value; } set { OverrideNativeType = value; } }
+        public bool ShouldSerialize_OverrideNativeType_() { return OverrideNativeType != null; }
 
         /// <summary>
         /// Pointer to modify the type
@@ -232,6 +227,17 @@ namespace SharpGen.Config
         [XmlAttribute("callback-dual")]
         public bool _IsDualCallbackInterface_ { get { return IsDualCallbackInterface.Value; } set { IsDualCallbackInterface = value; } } public bool ShouldSerialize_IsDualCallbackInterface_() { return IsDualCallbackInterface != null; }
 
+        [XmlIgnore]
+        public bool? AutoGenerateShadow { get; set; }
+        [XmlAttribute("autogen-shadow")]
+        public bool _AutoGenerateShadow_ { get => AutoGenerateShadow.Value; set => AutoGenerateShadow = value; } public bool ShouldSerialize_AutoGenerateShadow_() { return AutoGenerateShadow != null; }
+        
+        [XmlAttribute("shadow-name")]
+        public string ShadowName { get; set; }
+
+        [XmlAttribute("vtbl-name")]
+        public string VtblName { get; set; }
+
         /// <summary>
         /// Used for methods to specify that inheriting methods from interface should be kept public and without any rename.
         /// </summary>
@@ -257,12 +263,6 @@ namespace SharpGen.Config
         public bool _RawPtr_ { get { return RawPtr.Value; } set { RawPtr = value; } } public bool ShouldSerialize_RawPtr_() { return RawPtr != null; }
 
         /// <summary>
-        /// DLL name attached to a function
-        /// </summary>
-        [XmlAttribute("macro-dll")]
-        public string FunctionDllNameFromMacro { get; set; }
-
-        /// <summary>
         /// Parameter Attribute
         /// </summary>
         [XmlIgnore]
@@ -282,12 +282,18 @@ namespace SharpGen.Config
         /// ClassType attached to a function
         /// </summary>
         [XmlAttribute("group")]
-        public string CsClass { get; set; }
+        public string Group { get; set; }
 
-		/// <summary>
-		/// An integer that can be used to transform the method's vtable offset relative to the value specified by the compiler.
-		/// </summary>
-		[XmlAttribute("offset-translate")]
-		public int LayoutOffsetTranslate { get; set; }
+        /// <summary>
+        /// An integer that can be used to transform the method's vtable offset relative to the value specified by the compiler.
+        /// </summary>
+        [XmlAttribute("offset-translate")]
+        public int LayoutOffsetTranslate { get; set; }
+
+        /// <summary>
+        /// Specifies how a marshallable element is related to other marshallables.
+        /// </summary>
+        [XmlAttribute("relation")]
+        public string Relation { get; set; }
     }
 }

@@ -13,8 +13,8 @@ namespace SharpGen.Generator
 {
     class PropertyCodeGenerator : MemberCodeGeneratorBase<CsProperty>
     {
-        public PropertyCodeGenerator(IGeneratorRegistry generators, IDocumentationLinker documentation)
-            :base(documentation)
+        public PropertyCodeGenerator(IGeneratorRegistry generators, IDocumentationLinker documentation, ExternalDocCommentsReader docReader)
+            :base(documentation, docReader)
         {
             Generators = generators;
         }
@@ -33,24 +33,63 @@ namespace SharpGen.Generator
                 {
                     if (csElement.IsPersistent)
                     {
-                        accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                            .WithBody(Block(
-                                IfStatement(BinaryExpression(SyntaxKind.EqualsExpression,
-                                    MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
-                                        ThisExpression(),
-                                        IdentifierName($"{csElement.Name}__")),
-                                    LiteralExpression(SyntaxKind.NullLiteralExpression)),
-                                    ExpressionStatement(
-                                        InvocationExpression(IdentifierName(csElement.Getter.Name))
-                                            .WithArgumentList(
-                                                ArgumentList(
+                        if (csElement.IsValueType)
+                        {
+                            accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                                .WithBody(Block(
+                                    IfStatement(
+                                        BinaryExpression(SyntaxKind.EqualsExpression,
+                                            IdentifierName($"{csElement.Name}__"),
+                                            LiteralExpression(SyntaxKind.NullLiteralExpression)),
+                                        Block(
+                                            LocalDeclarationStatement(
+                                                VariableDeclaration(
+                                                    ParseTypeName(csElement.PublicType.QualifiedName))
+                                                .WithVariables(
                                                     SingletonSeparatedList(
-                                                        Argument(IdentifierName($"{csElement.Name}__"))
-                                                        .WithRefOrOutKeyword(Token(SyntaxKind.OutKeyword))))))),
-                                ReturnStatement(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
-                                        ThisExpression(),
-                                        IdentifierName($"{csElement.Name}__")))
+                                                        VariableDeclarator(Identifier("temp"))))),
+                                            ExpressionStatement(
+                                                InvocationExpression(IdentifierName(csElement.Getter.Name))
+                                                .WithArgumentList(
+                                                    ArgumentList(
+                                                        SingletonSeparatedList(
+                                                            Argument(IdentifierName("temp"))
+                                                            .WithRefOrOutKeyword(
+                                                                Token(SyntaxKind.OutKeyword)))))),
+                                            ExpressionStatement(
+                                                AssignmentExpression(SyntaxKind.SimpleAssignmentExpression,
+                                                    IdentifierName($"{csElement.Name}__"),
+                                                    IdentifierName("temp"))))),
+                                    ReturnStatement(
+                                        MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                                            MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                                            ThisExpression(),
+                                            IdentifierName($"{csElement.Name}__")),
+                                        IdentifierName("Value")))
                                 )));
+                        }
+                        else
+                        {
+                            accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                                .WithBody(Block(
+                                    IfStatement(BinaryExpression(SyntaxKind.EqualsExpression,
+                                        MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                                            ThisExpression(),
+                                            IdentifierName($"{csElement.Name}__")),
+                                        LiteralExpression(SyntaxKind.NullLiteralExpression)),
+                                        ExpressionStatement(
+                                            InvocationExpression(IdentifierName(csElement.Getter.Name))
+                                                .WithArgumentList(
+                                                    ArgumentList(
+                                                        SingletonSeparatedList(
+                                                            Argument(IdentifierName($"{csElement.Name}__"))
+                                                            .WithRefOrOutKeyword(Token(SyntaxKind.OutKeyword))))))),
+                                    ReturnStatement(
+                                        MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                                            ThisExpression(),
+                                            IdentifierName($"{csElement.Name}__")))
+                                    )));
+                        }
                     }
                     else
                     {
@@ -78,14 +117,22 @@ namespace SharpGen.Generator
                 {
                     if (csElement.IsPersistent)
                     {
+                        ExpressionSyntax initializer = BinaryExpression(SyntaxKind.CoalesceExpression,
+                                IdentifierName($"{csElement.Name}__"),
+                                ParenthesizedExpression(
+                                    AssignmentExpression(SyntaxKind.SimpleAssignmentExpression,
+                                        IdentifierName($"{csElement.Name}__"),
+                                        InvocationExpression(ParseExpression(csElement.Getter.Name)))));
+                        
+                        if (csElement.IsValueType)
+                        {
+                            initializer = MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                                ParenthesizedExpression(initializer),
+                                IdentifierName("Value"));
+                        }
 
                         accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                           .WithExpressionBody(ArrowExpressionClause(
-                               BinaryExpression(SyntaxKind.CoalesceExpression,
-                                IdentifierName($"{csElement.Name}__"),
-                                AssignmentExpression(SyntaxKind.SimpleAssignmentExpression,
-                                    IdentifierName($"{csElement.Name}__"),
-                                    InvocationExpression(ParseExpression(csElement.Getter.Name))))))
+                           .WithExpressionBody(ArrowExpressionClause(initializer))
                             .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
                     }
                     else
@@ -100,8 +147,9 @@ namespace SharpGen.Generator
             
             if (csElement.Setter != null)
             {
-                var paramByRef = Generators.Parameter.GenerateCode(csElement.Setter.Parameters[0])
-                    .Modifiers.Select(token => token.Kind()).Contains(SyntaxKind.RefKeyword);
+                var paramByRef = Generators.Marshalling.GetMarshaller(csElement.Setter.Parameters[0])
+                    .GenerateManagedArgument(csElement.Setter.Parameters[0])
+                    .RefOrOutKeyword.Kind() == SyntaxKind.RefKeyword;
 
                 accessors.Add(AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
                     .WithExpressionBody(ArrowExpressionClause(
@@ -126,7 +174,10 @@ namespace SharpGen.Generator
             {
                 yield return FieldDeclaration(
                     VariableDeclaration(
-                        ParseTypeName(csElement.PublicType.QualifiedName))
+                        csElement.IsValueType
+                            ? NullableType(ParseTypeName(csElement.PublicType.QualifiedName))
+                            : ParseTypeName(csElement.PublicType.QualifiedName)
+                        )
                     .WithVariables(
                         SingletonSeparatedList(
                             VariableDeclarator(

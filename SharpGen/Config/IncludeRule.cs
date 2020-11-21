@@ -28,12 +28,11 @@ namespace SharpGen.Config
     /// <summary>
     /// An Include directive
     /// </summary>
-    public class IncludeRule : IEquatable<IncludeRule>
+    public class IncludeRule
     {
         public IncludeRule()
         {
             AttachTypes = new List<string>();
-            FilterErrors = new List<string>();
         }
 
         /// <summary>
@@ -113,38 +112,15 @@ namespace SharpGen.Config
         public List<string> AttachTypes{ get; set; }
 
         /// <summary>
-        /// Gets or sets the ignore errors.
-        /// </summary>
-        /// <value>The ignore errors.</value>
-        [XmlElement("filter-error")]
-        public List<string> FilterErrors { get; set; }
-
-        /// <summary>
         /// Returns a <see cref="System.String"/> that represents this instance.
         /// </summary>
         /// <returns>
         /// A <see cref="System.String"/> that represents this instance.
         /// </returns>
+        [ExcludeFromCodeCoverage]
         public override string ToString()
         {
             return string.Format(System.Globalization.CultureInfo.InvariantCulture, "include: {0}", File);
-        }
-
-        public override bool Equals(object obj)
-        {
-            return obj is IncludeRule other && Equals(other);
-        }
-
-        public bool Equals(IncludeRule other)
-        {
-            return File == other.File
-                && Pre == other.Pre
-                && Post == other.Post;
-        }
-
-        public override int GetHashCode()
-        {
-            return File.GetHashCode();
         }
     }
 }

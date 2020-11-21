@@ -24,23 +24,6 @@ namespace SharpGen.Config
     [XmlType("define")]
     public class DefineExtensionRule : ExtensionBaseRule
     {
-        public DefineExtensionRule()
-        {
-        }
-
-        public DefineExtensionRule(int sizeOf)
-        {
-            SizeOf = sizeOf;
-        }
-
-        public DefineExtensionRule(int sizeOf, int align)
-        {
-            SizeOf = sizeOf;
-            Align = align;
-        }
-
-        [XmlAttribute("class")]
-        public string NewClass { get; set; }
         [XmlAttribute("enum")]
         public string Enum { get; set; }
         [XmlAttribute("struct")]
@@ -48,6 +31,17 @@ namespace SharpGen.Config
         [XmlAttribute("interface")]
         public string Interface { get; set; }
 
+        [XmlAttribute("native")]
+        public string NativeImplementation { get; set; }
+
+        [XmlAttribute("underlying")]
+        public string UnderlyingType { get; set; }
+
+        [XmlAttribute("shadow")]
+        public string ShadowName { get; set; }
+
+        [XmlAttribute("vtbl")]
+        public string VtblName { get; set; }
 
         [XmlIgnore]
         public int? SizeOf { get; set; }
@@ -74,6 +68,12 @@ namespace SharpGen.Config
         [XmlAttribute("custom-new")]
         public bool _HasCustomNew_ { get { return HasCustomNew.Value; } set { HasCustomNew = value; } } public bool ShouldSerialize_HasCustomNew_() { return HasCustomNew != null; }
 
+        [XmlIgnore]
+        public bool? IsNativePrimitive { get; set; }
+        [XmlAttribute("primitive")]
+        public bool _IsNativePrimitive_ { get => IsNativePrimitive.Value; set => IsNativePrimitive = value; } public bool ShouldSerialize_IsNativePrimitive_() => IsNativePrimitive != null;
+
+        [ExcludeFromCodeCoverage]
         public override string ToString()
         {
             return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0} {1} {2}", base.ToString(), SizeOf.HasValue ? "sizeof:" + SizeOf.Value : "", Align.HasValue ? "align:" + Align.Value : "");

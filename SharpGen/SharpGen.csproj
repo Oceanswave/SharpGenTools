@@ -1,25 +1,26 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <Sdk Name="Microsoft.Build.CentralPackageVersions" />
+
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <TargetFrameworks>netstandard1.5;net46</TargetFrameworks>
-    <Description>Library for generating efficient C# code from C++ and COM headers.</Description>
+    <TargetFramework>netstandard2.0</TargetFramework>
   </PropertyGroup>
+
   <ItemGroup>
-    <EmbeddedResource Include="**/*.tt" />
-    <PackageReference Include="HtmlAgilityPack" Version="1.5.0-beta9" />
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="2.1.0" />
-    <PackageReference Include="Microsoft.Win32.Registry" Version="4.3.0" />
-    <PackageReference Include="Newtonsoft.Json" Version="10.0.2" />
-    <PackageReference Include="System.Diagnostics.Process" Version="4.3.0" />
-    <PackageReference Include="System.IO.Compression" Version="4.3.0" />
-    <PackageReference Include="System.Net.Requests" Version="4.3.0" />
-    <PackageReference Include="System.Runtime.Extensions" Version="4.3.0" />
-    <PackageReference Include="System.Runtime.Loader" Version="4.3.0" Condition="'$(TargetFramework)' == 'netstandard1.5'" />
-    <PackageReference Include="System.ServiceModel.Duplex" Version="4.3.0" />
-    <PackageReference Include="System.ServiceModel.Http" Version="4.3.0" />
-    <PackageReference Include="System.ServiceModel.NetTcp" Version="4.3.0" />
-    <PackageReference Include="System.ServiceModel.Security" Version="4.3.0" />
-    <PackageReference Include="System.ValueTuple" Version="4.3.1" />
-    <PackageReference Include="System.Xml.XmlSerializer" Version="4.3.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="System.Runtime.Extensions" />
+    <PackageReference Include="System.ValueTuple" />
+    <PackageReference Include="System.Xml.XmlSerializer" />
+    <PackageReference Include="System.Xml.XmlDocument" />
+    <PackageReference Include="System.Runtime.Serialization.Primitives" />
+    <PackageReference Include="System.Runtime.Serialization.Xml" />
   </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>SharpGen.UnitTests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

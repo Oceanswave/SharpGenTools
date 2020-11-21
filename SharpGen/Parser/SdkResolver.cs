@@ -1,12 +1,10 @@
 ﻿using SharpGen.Config;
 using SharpGen.Logging;
 using SharpGen.VisualStudioSetup;
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace SharpGen.Parser
 {
@@ -29,30 +27,24 @@ namespace SharpGen.Parser
                     Logger.Message($"Resolving Windows SDK: version {sdkRule.Version}");
                     return ResolveWindowsSdk(sdkRule.Version);
                 default:
-                    Logger.Error("Unknown SDK specified in an SDK rule.");
+                    Logger.Error(LoggingCodes.UnknownSdk, "Unknown SDK specified in an SDK rule.");
                     return Enumerable.Empty<IncludeDirRule>();
             }
         }
 
         private IEnumerable<IncludeDirRule> ResolveStdLib(string version)
         {
-            bool onWindows;
-#if NETSTANDARD1_5
-            onWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
-#else
-            onWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
-#endif
-            if (onWindows)
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                var vcInstallDir = Path.Combine(GetVSInstallPath(), "VC");
+                var vsInstallDir = GetVSInstallPath();
 
-                if (version == null)
-                {
-                    version
-                        = File.ReadAllText(vcInstallDir + Path.Combine(@"\Auxiliary\Build", "Microsoft.VCToolsVersion.default.txt")).Trim();
-                }
+                version ??= File.ReadAllText(
+                    Path.Combine(vsInstallDir, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt")
+                );
 
-                yield return new IncludeDirRule(Path.Combine(vcInstallDir, $@"Tools\MSVC\{version}\include"));
+                yield return new IncludeDirRule(
+                    Path.Combine(vsInstallDir, "VC", "Tools", "MSVC", version.Trim(), "include")
+                );
             }
             else
             {
@@ -70,10 +62,10 @@ namespace SharpGen.Parser
             do
             {
                 enumInstances.Next(1, instances, out fetched);
-                var instance2 = (ISetupInstance2)instances[0];
-                var state = instance2.GetState();
                 if (fetched > 0)
                 {
+                    var instance2 = (ISetupInstance2)instances[0];
+                    var state = instance2.GetState();
                     if ((state & InstanceState.Registered) == InstanceState.Registered)
                     {
                         if (instance2.GetPackages().Any(pkg => pkg.GetId() == "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"))
@@ -85,7 +77,7 @@ namespace SharpGen.Parser
             }
             while (fetched > 0);
 
-            Logger.Fatal("Unable to find compatible Visual Studio installation path.");
+            Logger.Fatal("Unable to find a Visual Studio installation that has the Visual C++ Toolchain installed.");
 
             return null;
         }

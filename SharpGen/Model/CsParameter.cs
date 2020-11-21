@@ -29,177 +29,134 @@ using System.Runtime.Serialization;
 namespace SharpGen.Model
 {
     [DataContract(Name = "Parameter")]
-    public class CsParameter : CsMarshalBase
+    public class CsParameter : CsMarshalCallableBase
     {
-        public CsParameter()
-        {
-        }
-
-        public override CppElement CppElement
-        {
-            get => base.CppElement;
-            set
-            {
-                base.CppElement = value;
-                NativeParamAttribute = ((CppParameter)value).Attribute;
-            }
-        }
-        
+        private const int SizeOfLimit = 16;
         [DataMember]
         public CsParameterAttribute Attribute { get; set; }
+
+        [DataMember]
+        public string DefaultValue { get; set; }
+
+        [DataMember]
+        public bool ForcePassByValue { get; set; }
 
         [DataMember]
         public bool HasParams { get; set; }
 
         [DataMember]
-        public bool IsOptional { get; set; }
-
-        [DataMember]
-        public bool IsUsedAsReturnType { get; set; }
-
-        [DataMember]
         public bool IsFast { get; set; }
 
-        public bool IsFastOut
+        public override bool IsFastOut
         {
             get { return IsFast && IsOut; }
         }
 
-        [DataMember]
-        public string DefaultValue { get; set; }
-
-        private const int SizeOfLimit = 16;
-
-        protected override void UpdateFromTag(MappingRule tag)
-        {
-            base.UpdateFromTag(tag);
-            if (tag.ParameterUsedAsReturnType.HasValue)
-                IsUsedAsReturnType = tag.ParameterUsedAsReturnType.Value;
-            if (tag.ParameterAttribute.HasValue && (tag.ParameterAttribute.Value & ParamAttribute.Fast) != 0)
-                IsFast = true;
-
-            DefaultValue = tag.DefaultValue;
-        }
-
-        public bool IsFixed
+        public override bool IsFixed
         {
             get
             {
                 if (Attribute == CsParameterAttribute.Ref || Attribute == CsParameterAttribute.RefIn)
                 {
-                    if (IsRefInValueTypeOptional || IsRefInValueTypeByValue)
-                        return false;
-                    return true;
+                    return !(PassedByNullableInstance || RefInPassedByValue);
                 }
                 if (Attribute == CsParameterAttribute.Out && !IsBoolToInt)
                     return true;
-                if (IsArray && !IsComArray)
+                if (IsArray && !IsInterfaceArray)
                     return true;
                 return false;
             }
         }
 
-        public string TempName
-        {
-            get { return Name + "_"; }
-        }
-
-        public bool IsRef
-        {
-            get { return Attribute == CsParameterAttribute.Ref; }
-        }
-
-        public bool IsComArray
-        {
-            get
-            {
-                return PublicType is CsComArray;
-            }
-        }
-
-        public bool IsInComArrayLike
-        {
-            get
-            {
-                return IsArray && IsComObject && !IsOut;
-            }
-        }
-
-        public bool IsComObject
-        {
-            get
-            {
-                return PublicType.GetType() == typeof(CsInterface);
-            }
-        }
-
-        public bool IsRefIn
-        {
-            get { return Attribute == CsParameterAttribute.RefIn; }
-        }
-
-        public bool IsIn
+        public override bool IsIn
         {
             get { return Attribute == CsParameterAttribute.In; }
         }
 
-        public bool IsOut
+        public bool IsInInterfaceArrayLike
+        {
+            get
+            {
+                return IsArray && PublicType is CsInterface iface && !iface.IsCallback && !IsOut;
+            }
+        }
+
+        public override bool IsOptional => OptionalParameter;
+
+        /// <summary>
+        /// Parameter is an Out parameter and passed by pointer.
+        /// </summary>
+        public override bool IsOut
         {
             get { return Attribute == CsParameterAttribute.Out; }
         }
 
-        public bool IsPrimitive
+        /// <summary>
+        /// Parameter is an In/Out parameter and passed by pointer.
+        /// </summary>
+        public override bool IsRef
         {
-            get { return PublicType.Type != null && PublicType.Type.GetTypeInfo().IsPrimitive; }
+            get { return Attribute == CsParameterAttribute.Ref; }
         }
 
-        public bool IsString
+        /// <summary>
+        /// Parameter is an In parameter and passed by pointer.
+        /// </summary>
+        public override bool IsRefIn
         {
-            get { return PublicType.Type == typeof (string); }
+            get { return Attribute == CsParameterAttribute.RefIn; }
         }
 
-        public bool IsValueType
-        {
-            get { return PublicType is CsStruct || PublicType is CsEnum ||
-                    (PublicType.Type != null && (PublicType.Type.GetTypeInfo().IsValueType || PublicType.Type.GetTypeInfo().IsPrimitive)); }
-        }
-
-        public bool IsStructClass
-        {
-            get { return PublicType is CsStruct csStruct && csStruct.GenerateAsClass; }
-        }
-
-        public bool HasNativeValueType
-        {
-            get { return (PublicType is CsStruct csStruct && csStruct.HasMarshalType) ; }
-        }
-
-        public bool IsStaticMarshal
-        {
-            get { return (PublicType is CsStruct csStruct && csStruct.IsStaticMarshal); }
-        }
-
-        public bool IsRefInValueTypeOptional
-        {
-            get { return IsRefIn && IsValueType && !IsArray && IsOptional; }
-        }
-
-        public ParamAttribute NativeParamAttribute { get; set; }
-
-        public bool IsRefInValueTypeByValue
+        public override bool RefInPassedByValue
         {
             get
             {
                 return IsRefIn && IsValueType && !IsArray
-                       && ((PublicType.SizeOf <= SizeOfLimit && !HasNativeValueType) || (NativeParamAttribute & ParamAttribute.Value) != 0);
+                       && ((PublicType.Size <= SizeOfLimit && !HasNativeValueType) || ForcePassByValue);
             }
         }
+
+        public bool PassedByManagedReference
+            => (IsRef || IsRefIn)
+                && (!(PassedByNullableInstance || RefInPassedByValue)
+                && !IsStructClass);
+
+        public override bool PassedByNativeReference => IsRefIn || IsRef || IsOut;
+
+        [DataMember]
+        public bool IsUsedAsReturnType { get; set; }
+
+        public override bool UsedAsReturn => IsUsedAsReturnType;
+
+        [DataMember]
+        public bool OptionalParameter { get; set; }
 
         public override object Clone()
         {
             var parameter = (CsParameter)base.Clone();
             parameter.Parent = null;
             return parameter;
+        }
+
+        protected override void UpdateFromMappingRule(MappingRule tag)
+        {
+            base.UpdateFromMappingRule(tag);
+            if (tag.ParameterUsedAsReturnType.HasValue)
+                IsUsedAsReturnType = tag.ParameterUsedAsReturnType.Value;
+            if (tag.ParameterAttribute.HasValue)
+            {
+                if ((tag.ParameterAttribute.Value & ParamAttribute.Fast) != 0)
+                {
+                    IsFast = true;
+                }
+
+                if ((tag.ParameterAttribute.Value & ParamAttribute.Value) != 0)
+                {
+                    ForcePassByValue = true;
+                }
+            }
+
+            DefaultValue = tag.DefaultValue;
         }
     }
 }

@@ -55,7 +55,8 @@ namespace SharpGen.Transform
             var newEnum = new CsEnum
             {
                 Name = NamingRules.Rename(cppEnum),
-                CppElement = cppEnum
+                CppElement = cppEnum,
+                UnderlyingType = typeRegistry.ImportType(typeof(int))
             };
 
             // Get the namespace for this particular include and enum
@@ -76,27 +77,27 @@ namespace SharpGen.Transform
         {
             var cppEnum = (CppEnum) newEnum.CppElement;
 
-            // Get tag from C++ enum
-            var tag = cppEnum.GetTagOrDefault<MappingRule>();
-
             // Determine enum type. Default is int
-            string typeName = cppEnum.GetTypeNameWithMapping();
+            var typeName = cppEnum.GetTypeNameWithMapping();
             switch (typeName)
             {
                 case "byte":
-                    newEnum.Type = typeof(byte);
-                    newEnum.SizeOf = 1;
+                    newEnum.UnderlyingType = typeRegistry.ImportType(typeof(byte));
                     break;
                 case "short":
-                    newEnum.Type = typeof(short);
-                    newEnum.SizeOf = 1;
+                    newEnum.UnderlyingType = typeRegistry.ImportType(typeof(short));
+                    break;
+                case "ushort":
+                    newEnum.UnderlyingType = typeRegistry.ImportType(typeof(ushort));
                     break;
                 case "int":
-                    newEnum.Type = typeof(int);
-                    newEnum.SizeOf = 4;
+                    newEnum.UnderlyingType = typeRegistry.ImportType(typeof(int));
+                    break;
+                case "uint":
+                    newEnum.UnderlyingType = typeRegistry.ImportType(typeof(uint));
                     break;
                 default:
-                    Logger.Error("Invalid type [{0}] for enum [{1}]. Types supported are : int, byte, short", typeName, cppEnum);
+                    Logger.Error(LoggingCodes.InvalidUnderlyingType, "Invalid type [{0}] for enum [{1}]. Types supported are : int, byte, short", typeName, cppEnum);
                     break;
             }
 
@@ -133,7 +134,9 @@ namespace SharpGen.Transform
                 newEnum.Add(csharpEnumItem);
             }
 
-            bool tryToAddNone = tag.EnumHasNone ?? false;
+            var rule = cppEnum.GetMappingRule();
+
+            bool tryToAddNone = rule.EnumHasNone ?? false;
 
             // If C++ enum name is ending with FLAG OR FLAGS
             // Then tag this enum as flags and add None if necessary
@@ -141,7 +144,7 @@ namespace SharpGen.Transform
             {
                 newEnum.IsFlag = true;
 
-                if (!tag.EnumHasNone.HasValue)
+                if (!rule.EnumHasNone.HasValue)
                     tryToAddNone = !newEnum.EnumItems.Any(item => item.Name == "None");
             }
 
@@ -150,7 +153,8 @@ namespace SharpGen.Transform
             {
                 var csharpEnumItem = new CsEnumItem("None", "0")
                 {
-                    CppElement = new CppElement { Description = "None." }
+                    CppElementName = "None",
+                    Description = "None"
                 };
                 newEnum.Add(csharpEnumItem);
             }

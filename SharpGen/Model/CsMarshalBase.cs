@@ -18,6 +18,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using System;
+using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.Serialization;
 
 namespace SharpGen.Model
@@ -26,13 +29,13 @@ namespace SharpGen.Model
     public class CsMarshalBase : CsBase
     {
         /// <summary>
-        ///   Public type used for interface
+        ///   Public type used for element.
         /// </summary>
         [DataMember]
         public CsTypeBase PublicType { get; set; }
 
         /// <summary>
-        ///   Internal type used for marshalling. If null, then use instead public type.
+        ///   Internal type used for marshalling to native.
         /// </summary>
         [DataMember]
         public CsTypeBase MarshalType { get; set; }
@@ -41,21 +44,77 @@ namespace SharpGen.Model
         public bool HasPointer { get; set; }
 
         [DataMember]
-        public bool HasMarshalType { get; set; }
-
-        [DataMember]
         public bool IsArray { get; set; }
 
         [DataMember]
         public int ArrayDimensionValue { get; set; }
 
         [DataMember]
-        public string ArrayDimension { get; set; }
-
-        [DataMember]
         public bool IsWideChar { get; set; }
 
         [DataMember]
         public bool IsBoolToInt { get; set; }
+
+        public virtual bool IsOptional => false;
+
+        public virtual bool IsRefIn => false;
+
+        public virtual bool IsFastOut => false;
+
+        public int Size => MarshalType.Size * ((ArrayDimensionValue > 1) ? ArrayDimensionValue : 1);
+
+        public bool IsValueType
+        {
+            get { return (PublicType is CsStruct csStruct && !csStruct.GenerateAsClass) || PublicType is CsEnum ||
+                    (PublicType is CsFundamentalType type && (type.Type.GetTypeInfo().IsValueType || type.Type.GetTypeInfo().IsPrimitive)); }
+        }
+
+        public bool PassedByNullableInstance => IsRefIn && IsValueType && !IsArray && IsOptional;
+
+        public bool IsInterface
+        {
+            get
+            {
+                return PublicType is CsInterface;
+            }
+        }
+
+        public bool IsStructClass
+        {
+            get { return PublicType is CsStruct csStruct && csStruct.GenerateAsClass; }
+        }
+
+        public bool IsPrimitive
+        {
+            get { return PublicType is CsFundamentalType type && type.Type.GetTypeInfo().IsPrimitive; }
+        }
+
+        public bool IsString
+        {
+            get { return PublicType is CsFundamentalType type && type.Type == typeof(string); }
+        }
+
+        public bool HasNativeValueType => (PublicType is CsStruct csStruct && csStruct.HasMarshalType);
+
+        public bool IsStaticMarshal => (PublicType is CsStruct csStruct && csStruct.IsStaticMarshal);
+
+        public bool IsInterfaceArray => PublicType is CsInterfaceArray;
+
+        public bool IsNullableStruct => PassedByNullableInstance && !IsStructClass;
+
+        public string IntermediateMarshalName => Name[0] == '@' ? $"_{Name.Substring(1)}" : $"_{Name}";
+
+        public bool MappedToDifferentPublicType
+        {
+            get
+            {
+                return MarshalType != PublicType
+                && !IsBoolToInt
+                && !(MarshalType is CsFundamentalType fundamental && fundamental.Type == typeof(IntPtr) && HasPointer)
+                && !(IsInterface && HasPointer);
+            }
+        }
+
+        [DataMember] public IList<MarshallableRelation> Relations { get; set; }
     }
 }

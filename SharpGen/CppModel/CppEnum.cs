@@ -39,14 +39,6 @@ namespace SharpGen.CppModel
         }
 
         /// <summary>
-        /// Adds the None = 0 enum item.
-        /// </summary>
-        public void AddNone()
-        {
-            AddEnumItem("None", "0");
-        }
-
-        /// <summary>
         /// Gets the enum items.
         /// </summary>
         /// <value>The enum items.</value>
@@ -55,5 +47,9 @@ namespace SharpGen.CppModel
         {
             get { return Iterate<CppEnumItem>(); }
         }
+
+
+        [XmlAttribute("underlying-type")]
+        public string UnderlyingType { get; set; } = "int";
     }
 }

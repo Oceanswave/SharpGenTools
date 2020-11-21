@@ -48,3 +48,19 @@ BuildErrors.log
 #ignore certification test results
 Source/CertificationTests/Results/*
 *.tlog
+
+# Documentation
+_build/
+
+.vscode/*
+.idea/
+
+# CodeRush personal settings
+.cr/personal
+
+# Scripted Code Coverage
+coverage.xml
+CoverageReport/*
+artifacts/
+
+*.binlog

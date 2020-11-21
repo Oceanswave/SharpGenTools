@@ -29,6 +29,7 @@ namespace SharpGen.Model
     [DataContract(Name = "Interface")]
     public class CsInterface : CsTypeBase
     {
+        [ExcludeFromCodeCoverage(Reason = "Required for XML serialization.")]
         public CsInterface() : this(null)
         {
         }
@@ -59,24 +60,27 @@ namespace SharpGen.Model
             get { return Items.OfType<CsVariable>(); }
         }
 
-        protected override void UpdateFromTag(MappingRule tag)
+        protected override void UpdateFromMappingRule(MappingRule tag)
         {
-            base.UpdateFromTag(tag);
+            base.UpdateFromMappingRule(tag);
             IsCallback = tag.IsCallbackInterface ?? false;
             IsDualCallback = tag.IsDualCallbackInterface ?? false;
+            AutoGenerateShadow = tag.AutoGenerateShadow ?? false;
+            ShadowName = tag.ShadowName;
+            VtblName = tag.VtblName;
         }
 
         /// <summary>
         /// Class Parent inheritance
         /// </summary>
         [DataMember]
-        public CsTypeBase Base { get; set; }
+        public CsInterface Base { get; set; }
 
         /// <summary>
         /// Interface Parent inheritance
         /// </summary>
         [DataMember]
-        public CsTypeBase IBase { get; set; }
+        public CsInterface IBase { get; set; }
 
         [DataMember]
         public CsInterface NativeImplementation { get; set; }
@@ -102,11 +106,33 @@ namespace SharpGen.Model
         [DataMember]
         public bool IsDualCallback { get; set; }
 
+        private string shadowName;
+
+        [DataMember]
+        public string ShadowName
+        {
+            get => shadowName ?? $"{QualifiedName}Shadow";
+            set => shadowName = value;
+        }
+
+        private string vtblName;
+
+        [DataMember]
+        public string VtblName
+        {
+            get => vtblName ?? $"{ShadowName}.{Name}Vtbl";
+            set => vtblName = value;
+        }
+
+        [DataMember]
+        public bool AutoGenerateShadow { get; set; }
+
         /// <summary>
         ///   List of declared inner structs
         /// </summary>
         public bool HasInnerInterfaces => Items.OfType<CsInterface>().Any();
 
+        [ExcludeFromCodeCoverage]
         public override string ToString()
         {
             return string.Format(System.Globalization.CultureInfo.InvariantCulture, "csinterface {0} => {1}", CppElementName, QualifiedName);

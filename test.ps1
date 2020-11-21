@@ -1,59 +1,45 @@
-$env:Path += ";C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.6.1 Tools\"
+Param(
+    [string] $Configuration = "Debug",
+    [switch] $SkipUnitTests = $false,
+    [switch] $SkipOuterloopTests = $false,
+    [switch] $SkipCodeCoverage = $false
+)
 
-pushd SharpGen.E2ETests
-    dotnet xunit
-    if ($LastExitCode -ne 0) {
+$RepoRoot = Split-Path -parent $PSCommandPath
+mkdir $RepoRoot/artifacts/coverage -ErrorAction SilentlyContinue
+
+$RunCodeCoverage = ($Configuration -eq "Debug") -and (-not $SkipCodeCoverage)
+
+if (!$SkipUnitTests) {
+    Write-Debug "Running Unit Tests"
+    if (!(./build/unit-test $RunCodeCoverage $Configuration -RepoRoot $RepoRoot)) {
+        Write-Error "Unit Tests Failed"
         exit 1
     }
-popd
-
-
-if(Test-Path -Path SdkTests/RestoredPackages/sharpgentools.sdk){
-    rm -r -Force SdkTests/RestoredPackages/sharpgentools.sdk
-    rm -r -Force SdkTests/RestoredPackages/sharpgen.runtime -ErrorAction SilentlyContinue
 }
 
-mkdir SdkTests/LocalPackages -ErrorAction SilentlyContinue
-rm SdkTests/LocalPackages/*.nupkg
-cp SharpGenTools.Sdk/bin/Release/*.nupkg SdkTests/LocalPackages/
-
-pushd .\SdkTests
-    msbuild /t:Restore /v:minimal
-
-    if ($LastExitCode -ne 0) {
+if (!$SkipOuterloopTests) {
+    Write-Debug "Deploying test packages"
+    if (!(./build/deploy-test-packages $Configuration)) {
+        Write-Error "Failed to deploy test packages"
         exit 1
     }
 
-    msbuild /p:Configuration=Release /m /v:n
-
-    if ($LastExitCode -ne 0) {
+    Write-Debug "Building outerloop native libraries"
+    if (!(./build/build-outerloop-native)) {
+        Write-Error "Failed to build outerloop native projects"
         exit 1
     }
 
-    pushd SharpGen.Runtime
-        msbuild /t:Pack /p:Configuration=Release /v:minimal
-        cp bin/Release/*.nupkg ../LocalPackages
-    popd
+    Write-Debug "Building outerloop tests"
+    if (!(./build/build-outerloop $RunCodeCoverage -RepoRoot $RepoRoot)) {
+        Write-Error "Failed to build outerloop tests"
+        exit 1
+    }
 
-    pushd ComInterface
-        pushd ComLibTest
-            dotnet test --no-build --no-restore -c Release
-            if ($LastExitCode -ne 0) {
-                exit 1
-            }
-        popd
-
-        msbuild ComLibTest.Package/ComLibTest.Package.csproj /t:Restore /v:minimal
-
-        if ($LastExitCode -ne 0) {
-            exit 1
-        }
-
-        msbuild ComLibTest.Package/ComLibTest.Package.csproj /p:Configuration=Release /v:minimal
-
-        if ($LastExitCode -ne 0) {
-            exit 1
-        }
-    popd
-
-popd
+    Write-Debug "Running outerloop tests"
+    if (!(./build/run-outerloop-tests $RunCodeCoverage -RepoRoot $RepoRoot)) {
+        Write-Error "Outerloop tests failed"
+        exit 1
+    }
+}

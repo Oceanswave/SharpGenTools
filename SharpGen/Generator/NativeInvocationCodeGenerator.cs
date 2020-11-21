@@ -1,15 +1,14 @@
-﻿using Microsoft.CodeAnalysis.CSharp;
-using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using SharpGen.Model;
-using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Linq;
+using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
 
 namespace SharpGen.Generator
 {
-    class NativeInvocationCodeGenerator : ICodeGenerator<CsMethod, ExpressionSyntax>
+    class NativeInvocationCodeGenerator: ICodeGenerator<(CsCallable, PlatformDetectionType, InteropMethodSignature), ExpressionSyntax>
     {
         public NativeInvocationCodeGenerator(IGeneratorRegistry generators, GlobalNamespaceProvider globalNamespace)
         {
@@ -20,57 +19,52 @@ namespace SharpGen.Generator
         readonly GlobalNamespaceProvider globalNamespace;
 
         public IGeneratorRegistry Generators { get; }
-
-        private static ExpressionSyntax GetCastedReturn(ExpressionSyntax invocation, CsMarshalBase returnType)
-        {
-            if (returnType.PublicType.Type != null && returnType.PublicType.Type == typeof(bool))
-                return BinaryExpression(SyntaxKind.NotEqualsExpression,
-                    LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(0)),
-                    invocation);
-            if (returnType.PublicType is CsInterface)
-                return ObjectCreationExpression(ParseTypeName(returnType.PublicType.QualifiedName),
-                    ArgumentList(
-                        SingletonSeparatedList(
-                            Argument(
-                                CastExpression(QualifiedName(IdentifierName("System"), IdentifierName("IntPtr")), invocation)))),
-                    InitializerExpression(SyntaxKind.ObjectInitializerExpression));
-            if (returnType.PublicType.Type == typeof(string))
-            {
-                var marshalMethodName = "PtrToString" + (returnType.IsWideChar ? "Uni" : "Ansi");
-                return InvocationExpression(
-                    MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
-                        ParseTypeName("System.Runtime.InteropServices.Marshal"), IdentifierName(marshalMethodName)),
-                        ArgumentList(
-                            SingletonSeparatedList(
-                                Argument(
-                                    invocation
-                                    ))));
-            }
-            return invocation;
-        }
         
-        public ExpressionSyntax GenerateCode(CsMethod method)
+        public ExpressionSyntax GenerateCode((CsCallable, PlatformDetectionType, InteropMethodSignature) sig)
         {
+            var (callable, platform, interopSig) = sig;
             var arguments = new List<ArgumentSyntax>();
 
-            if (!(method is CsFunction))
+            if (callable is CsMethod)
             {
                 arguments.Add(Argument(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
                                             ThisExpression(),
                                             IdentifierName("_nativePointer"))));
             }
 
-            if (method.IsReturnStructLarge)
+            var isForcedReturnBufferSig = interopSig.ForcedReturnBufferSig;
+
+            if (isForcedReturnBufferSig)
             {
-                arguments.Add(Argument(CastExpression(PointerType(PredefinedType(Token(SyntaxKind.VoidKeyword))),
-                                        PrefixUnaryExpression(SyntaxKind.AddressOfExpression,
-                                            IdentifierName("__result__")))));
+                arguments.Add(Generators.Marshalling.GetMarshaller(callable.ReturnValue).GenerateNativeArgument(callable.ReturnValue)); 
             }
 
-            arguments.AddRange(method.Parameters.Select(param => Generators.Argument.GenerateCode(param)));
+            arguments.AddRange(callable.Parameters.Select(param => Generators.Marshalling.GetMarshaller(param).GenerateNativeArgument(param)));
 
-            if (!(method is CsFunction))
+            if (callable is CsMethod method)
             {
+                var windowsOffsetExpression = LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(method.WindowsOffset));
+                var nonWindowsOffsetExpression = LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(method.Offset));
+                ExpressionSyntax vtableOffsetExpression;
+                if ((platform & PlatformDetectionType.Any) == PlatformDetectionType.Any
+                    && method.Offset != method.WindowsOffset)
+                {
+                    vtableOffsetExpression = ConditionalExpression(
+                        MemberAccessExpression(
+                            SyntaxKind.SimpleMemberAccessExpression,
+                            globalNamespace.GetTypeNameSyntax(WellKnownName.PlatformDetection),
+                            IdentifierName(PlatformDetectionType.IsWindows.ToString())),
+                        windowsOffsetExpression,
+                        nonWindowsOffsetExpression);
+                }
+                else if ((platform & PlatformDetectionType.IsWindows) != 0)
+                {
+                    vtableOffsetExpression = windowsOffsetExpression;
+                }
+                else
+                {
+                    vtableOffsetExpression = nonWindowsOffsetExpression;
+                }
                 arguments.Add(Argument(
                     ElementAccessExpression(
                         ParenthesizedExpression(
@@ -82,22 +76,37 @@ namespace SharpGen.Generator
                         BracketedArgumentList(
                             SingletonSeparatedList(
                                 Argument(method.CustomVtbl ?
-                                (ExpressionSyntax)MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
+                                MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
                                     ThisExpression(),
-                                    IdentifierName($"{method.Name}__vtbl_index"))
-                                : LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(method.Offset))
+                                    IdentifierName($"{callable.Name}__vtbl_index"))
+                                : vtableOffsetExpression
                                 )
                             )))));
             }
 
-            return GetCastedReturn(
-                InvocationExpression(
-                    IdentifierName(method is CsFunction ?
-                        method.CppElementName + "_"
-                    : method.GetParent<CsAssembly>().QualifiedName + ".LocalInterop." + method.Interop.Name),
-                    ArgumentList(SeparatedList(arguments))),
-                method.ReturnType
-            );
+            ExpressionSyntax call = InvocationExpression(
+                    IdentifierName(callable is CsFunction ?
+                        callable.CppElementName + GeneratorHelpers.GetPlatformSpecificSuffix(platform)
+                    : "LocalInterop." + interopSig.Name),
+                    ArgumentList(SeparatedList(arguments)));
+
+            if (interopSig.CastToNativeLong)
+                call = CastExpression(globalNamespace.GetTypeNameSyntax(WellKnownName.NativeLong), call);
+            
+            if (interopSig.CastToNativeULong)
+                call = CastExpression(globalNamespace.GetTypeNameSyntax(WellKnownName.NativeULong), call);
+
+            return isForcedReturnBufferSig || !callable.HasReturnType
+                ? call
+                : AssignmentExpression(
+                    SyntaxKind.SimpleAssignmentExpression,
+                    Generators.Marshalling.GetMarshaller(callable.ReturnValue)
+                        .GeneratesMarshalVariable(callable.ReturnValue)
+                        ? IdentifierName(
+                            Generators.Marshalling.GetMarshalStorageLocationIdentifier(callable.ReturnValue))
+                        : IdentifierName(callable.ReturnValue.Name),
+                    call
+                );
         }
 
     }

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using SharpGen.Model;
@@ -16,18 +17,18 @@ namespace SharpGenTools.Sdk
 
         public CachedDocumentationLinker(string fileName)
         {
-            using (var file = File.OpenRead(fileName))
-            using (var reader = new StreamReader(file))
+            var lines = File.ReadAllLines(fileName);
+
+            foreach (var line in lines.Where(ln => ln.Contains(Delimiter)))
             {
-                var pair = reader.ReadLine();
-                var components = pair.Split(Delimiter);
-                AddDocLink(components[0], components[1]);
+                var components = line.Split(Delimiter);
+                AddOrUpdateDocLink(components[0], components[1]);
             }
         }
 
-        public void AddDocLink(string cppName, string cSharpName)
+        public void AddOrUpdateDocLink(string cppName, string cSharpName)
         {
-            Links.Add(cppName, cSharpName);
+            Links[cppName] = cSharpName;
         }
 
         public string FindDocName(string cppName)

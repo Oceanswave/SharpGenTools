@@ -13,46 +13,20 @@ namespace SharpGen.Generator
 {
     class InterfaceCodeGenerator : MemberCodeGeneratorBase<CsInterface>
     {
-        public InterfaceCodeGenerator(IGeneratorRegistry generators, IDocumentationLinker documentation)
-            : base(documentation)
+        private readonly GlobalNamespaceProvider globalNamespace;
+
+        public InterfaceCodeGenerator(IGeneratorRegistry generators, IDocumentationLinker documentation, ExternalDocCommentsReader docReader, GlobalNamespaceProvider globalNamespace)
+            : base(documentation, docReader)
         {
             Generators = generators;
+            this.globalNamespace = globalNamespace;
         }
 
         public IGeneratorRegistry Generators { get; }
 
         public override IEnumerable<MemberDeclarationSyntax> GenerateCode(CsInterface csElement)
         {
-            DocumentationCommentTriviaSyntax docComment;
-            if (csElement.Parent is CsInterface)
-            {
-                docComment = DocumentationCommentTrivia(
-                    SyntaxKind.SingleLineDocumentationCommentTrivia,
-                    List(
-                        new XmlNodeSyntax[]{
-                            XmlText(XmlTextNewLine("", true)),
-                            XmlElement(
-                                XmlElementStartTag(XmlName(Identifier("summary"))),
-                                SingletonList<XmlNodeSyntax>(
-                                    XmlText(TokenList(
-                                        XmlTextLiteral($"Interface {csElement.Name}")))),
-                                XmlElementEndTag(XmlName(Identifier("summary")))
-                            ),
-                            XmlText(XmlTextNewLine("\n", true)),
-                            XmlElement(
-                                XmlElementStartTag(XmlName(Identifier("unmanaged"))),
-                                SingletonList<XmlNodeSyntax>(
-                                    XmlText(TokenList(
-                                        XmlTextLiteral(csElement.DocUnmanagedName)))),
-                                XmlElementEndTag(XmlName(Identifier("unmanaged")))
-                            ),
-                            XmlText(XmlTextNewLine("\n", false))
-                        }));
-            }
-            else
-            {
-                docComment = GenerateDocumentationTrivia(csElement);
-            }
+            var docComment = GenerateDocumentationTrivia(csElement);
 
             AttributeListSyntax attributes = null;
             if (csElement.Guid != null)
@@ -66,7 +40,7 @@ namespace SharpGen.Generator
             var visibility = TokenList(ParseTokens(csElement.VisibilityName)
                 .Concat(new[] { Token(SyntaxKind.PartialKeyword) }));
 
-            BaseListSyntax baseList = default;
+            var baseList = default(BaseListSyntax);
 
             if (csElement.Base != null || csElement.IBase != null)
             {
@@ -103,7 +77,19 @@ namespace SharpGen.Generator
                             SingletonSeparatedList(
                                 Argument(
                                     IdentifierName("nativePtr"))))),
-                                    Block()));
+                                    Block(
+                                        List(
+                                            csElement.InnerInterfaces.Select(inner =>
+                                                ExpressionStatement(
+                                                    AssignmentExpression(SyntaxKind.SimpleAssignmentExpression,
+                                                        IdentifierName(inner.PropertyAccessName),
+                                                        ObjectCreationExpression(
+                                                            ParseTypeName(inner.QualifiedName))
+                                                            .WithArgumentList(ArgumentList(
+                                                                SingletonSeparatedList(
+                                                                    Argument(IdentifierName("nativePtr"))
+                                        )))))))
+                                    )));
 
                 members.Add(ConversionOperatorDeclaration(
                     default,
@@ -242,8 +228,17 @@ namespace SharpGen.Generator
 
             foreach (var method in csElement.Methods)
             {
-                method.Hidden = csElement.IsCallback;
+                method.Hidden = csElement.IsCallback && !csElement.AutoGenerateShadow;
+                method.SignatureOnly = csElement.IsCallback;
                 members.AddRange(Generators.Method.GenerateCode(method));
+            }
+
+            if (csElement.IsCallback && csElement.AutoGenerateShadow)
+            {
+                yield return Generators.Shadow.GenerateCode(csElement);
+                var shadowAttribute = Attribute(globalNamespace.GetTypeNameSyntax(WellKnownName.ShadowAttribute))
+                    .AddArgumentListArguments(AttributeArgument(TypeOfExpression(ParseTypeName(csElement.ShadowName))));
+                attributes = attributes?.AddAttributes(shadowAttribute) ?? AttributeList(SingletonSeparatedList(shadowAttribute));
             }
 
             yield return csElement.IsCallback ?

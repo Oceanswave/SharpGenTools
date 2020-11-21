@@ -15,10 +15,12 @@ namespace SharpGen.Transform
         private readonly Dictionary<string, CsTypeBase> _mapDefinedCSharpType = new Dictionary<string, CsTypeBase>();
 
         private Logger Logger { get; }
+        public IDocumentationLinker DocLinker { get; }
 
-        public TypeRegistry(Logger logger)
+        public TypeRegistry(Logger logger, IDocumentationLinker docLinker)
         {
             Logger = logger;
+            DocLinker = docLinker;
         }
 
         /// <summary>
@@ -49,8 +51,8 @@ namespace SharpGen.Transform
                 }
                 if (type == null)
                 {
-                    Logger.Warning("Type [{0}] is not defined", typeName);
-                    cSharpType = new CsTypeBase { Name = typeName };
+                    Logger.Warning(LoggingCodes.TypeNotDefined, "Type [{0}] is not defined", typeName);
+                    cSharpType = new CsUndefinedType { Name = typeName };
                     DefineType(cSharpType);
                     return cSharpType;
                 }
@@ -59,7 +61,7 @@ namespace SharpGen.Transform
             return cSharpType;
         }
 
-        public CsTypeBase ImportType(Type type)
+        public CsFundamentalType ImportType(Type type)
         {
             var typeName = type.FullName;
 
@@ -67,25 +69,17 @@ namespace SharpGen.Transform
             {
                 typeName = "void";
             }
+            else if (type == typeof(void*))
+            {
+                typeName = "void*";
+            }
 
             if (_mapDefinedCSharpType.TryGetValue(typeName, out CsTypeBase preDefined))
             {
-                return preDefined;
+                return (CsFundamentalType)preDefined;
             }
 
-                var sizeOf = 0;
-            try
-            {
-#pragma warning disable 0618
-                sizeOf = Marshal.SizeOf(type);
-#pragma warning restore 0618
-            }
-            catch (Exception)
-            {
-                Logger.Message($"Tried to get the size of type {typeName}, which is not a struct.");
-            }
-
-            var cSharpType = new CsTypeBase { Name = typeName, Type = type, SizeOf = sizeOf };
+            var cSharpType = new CsFundamentalType(type) { Name = typeName };
             DefineType(cSharpType);
             return cSharpType;
         }
@@ -98,34 +92,17 @@ namespace SharpGen.Transform
         /// <param name = "marshalType">The C# marshal type</param>
         public void BindType(string cppName, CsTypeBase type, CsTypeBase marshalType = null)
         {
-            // Check for type replacer
-            if (type.CppElement != null)
-            {
-                var tag = type.CppElement.GetTagOrDefault<MappingRule>();
-                if (tag.Replace != null)
-                {
-                    Logger.Warning("Replace type {0} -> {1}", cppName, tag.Replace);
-
-                    // Remove old type from namespace if any
-                    var oldType = FindBoundType(tag.Replace);
-                    oldType?.Parent?.Remove(oldType);
-
-                    _mapCppNameToCSharpType.Remove(tag.Replace);
-
-                    // Replace the name
-                    cppName = tag.Replace;
-                }
-            }
 
             if (_mapCppNameToCSharpType.ContainsKey(cppName))
             {
                 var old = _mapCppNameToCSharpType[cppName];
-                Logger.Error("Mapping C++ element [{0}] to CSharp type [{1}/{2}] is already mapped to [{3}/{4}]", cppName, type.CppElementName,
+                Logger.Warning(LoggingCodes.DuplicateBinding, "Mapping C++ element [{0}] to CSharp type [{1}/{2}] is already mapped to [{3}/{4}]", cppName, type.CppElementName,
                              type.QualifiedName, old.CSharpType.CppElementName, old.CSharpType.QualifiedName);
             }
             else
             {
                 _mapCppNameToCSharpType.Add(cppName, (type, marshalType));
+                DocLinker.AddOrUpdateDocLink(cppName, type.QualifiedName);
             }
         }
 
@@ -155,10 +132,10 @@ namespace SharpGen.Transform
             return typeMap.MarshalType;
         }
 
-        public IEnumerable<(string CppType, CsTypeBase CSharpType)> GetTypeBindings()
+        public IEnumerable<(string CppType, CsTypeBase CSharpType, CsTypeBase MarshalType)> GetTypeBindings()
         {
             return from record in _mapCppNameToCSharpType
-                   select (record.Key, record.Value.CSharpType);
+                   select (record.Key, record.Value.CSharpType, record.Value.MarshalType);
         }
     }
 }

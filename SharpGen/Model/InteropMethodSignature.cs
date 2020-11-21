@@ -19,24 +19,85 @@
 // THE SOFTWARE.
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Serialization;
 using SharpGen.Generator;
 
 namespace SharpGen.Model
 {
+    [Flags]
+    public enum InteropMethodSignatureFlags
+    {
+        None = 0x0,
+        ForcedReturnBufferSig = 0x1,
+        IsFunction = 0x2,
+        CastToNativeLong = 0x4,
+        CastToNativeULong = 0x8,
+    }
+
     public class InteropMethodSignature : IEquatable<InteropMethodSignature>
     {
-        public InteropMethodSignature()
+        private const InteropMethodSignatureFlags FlagsToIgnoreForName =
+            InteropMethodSignatureFlags.CastToNativeLong |
+            InteropMethodSignatureFlags.CastToNativeULong |
+            InteropMethodSignatureFlags.IsFunction;
+        
+        public InteropType ReturnType { get; set; }
+        public List<InteropType> ParameterTypes { get; } = new List<InteropType>();
+
+        public bool ForcedReturnBufferSig
         {
-            ParameterTypes = new List<InteropType>();
+            get => Flags.HasFlag(InteropMethodSignatureFlags.ForcedReturnBufferSig);
+            set
+            {
+                if (value)
+                    Flags |= InteropMethodSignatureFlags.ForcedReturnBufferSig;
+                else
+                    Flags &= ~InteropMethodSignatureFlags.ForcedReturnBufferSig;
+            }
         }
 
-        public int Index { get; set; }
-        public InteropType ReturnType { get; set; }
-        public List<InteropType> ParameterTypes { get; }
-        public bool IsLocal { get; set; }
-        public bool IsFunction { get; set; }
+        public bool IsFunction
+        {
+            get => Flags.HasFlag(InteropMethodSignatureFlags.IsFunction);
+            set
+            {
+                if (value)
+                    Flags |= InteropMethodSignatureFlags.IsFunction;
+                else
+                    Flags &= ~InteropMethodSignatureFlags.IsFunction;
+            }
+        }
+
+        public bool CastToNativeLong
+        {
+            get => Flags.HasFlag(InteropMethodSignatureFlags.CastToNativeLong);
+            set
+            {
+                if (value)
+                    Flags |= InteropMethodSignatureFlags.CastToNativeLong;
+                else
+                    Flags &= ~InteropMethodSignatureFlags.CastToNativeLong;
+            }
+        }
+
+        public bool CastToNativeULong
+        {
+            get => Flags.HasFlag(InteropMethodSignatureFlags.CastToNativeULong);
+            set
+            {
+                if (value)
+                    Flags |= InteropMethodSignatureFlags.CastToNativeULong;
+                else
+                    Flags &= ~InteropMethodSignatureFlags.CastToNativeULong;
+            }
+        }
+
+        public string CallingConvention { get; set; }
+        public InteropMethodSignatureFlags Flags { get; set; }
+
+        private InteropMethodSignatureFlags FlagsForName => Flags & ~FlagsToIgnoreForName;
 
         public string Name
         {
@@ -45,7 +106,7 @@ namespace SharpGen.Model
                 var returnTypeName = ReturnType.TypeName;
                 returnTypeName = returnTypeName.Replace("*", "Ptr");
                 returnTypeName = returnTypeName.Replace(".", "");
-                return "Calli" + ((IsFunction)?"Func":"") + returnTypeName + ((IsLocal) ? Index.ToString() : "");
+                return $"Calli{CallingConvention}{(IsFunction ? "Func" : "")}{returnTypeName}_{FlagsForName}";
             }
         }
 
@@ -64,7 +125,9 @@ namespace SharpGen.Model
                 return false;
             if (this.ParameterTypes.Count != against.ParameterTypes.Count)
                 return false;
-            if (this.IsLocal != against.IsLocal)
+            if (this.CallingConvention != against.CallingConvention)
+                return false;
+            if (this.Flags != against.Flags)
                 return false;
 
             for (int i = 0; i < ParameterTypes.Count; i++)
@@ -75,19 +138,21 @@ namespace SharpGen.Model
             return true;
         }
 
-
+        [ExcludeFromCodeCoverage]
         public override string ToString()
         {
             StringBuilder builder = new StringBuilder();
             builder.Append(ReturnType.TypeName);
-            builder.Append(" Calli" + ReturnType.TypeName + "(");
+            builder.Append(" Calli");
+            builder.Append(ReturnType.TypeName);
+            builder.Append('(');
             for (int i = 0; i < ParameterTypes.Count; i++)
             {
                 builder.Append(ParameterTypes[i].TypeName);
                 if ((i + 1) < ParameterTypes.Count)
-                    builder.Append(",");
+                    builder.Append(',');
             }
-            builder.Append(")");
+            builder.Append(')');
             return builder.ToString();
         }
 

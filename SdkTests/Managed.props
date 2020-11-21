@@ -1,0 +1,24 @@
+<Project>
+    <PropertyGroup>
+        <TargetFramework>netcoreapp2.1</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <RestorePackagesPath>$(MSBuildThisFileDirectory)RestoredPackages/</RestorePackagesPath>
+        <RestoreNoCache>true</RestoreNoCache>
+        <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)LocalPackages</RestoreAdditionalProjectSources>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <SdkTestNative>$(MSBuildProjectName)</SdkTestNative>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="$(MSBuildThisFileDirectory)../SharpGen.Runtime/SharpGen.Runtime.csproj" />
+        <PackageReference Include="SharpGenTools.Sdk" Version="$(LocalPackageVersion)" IsImplicitlyDefined="true" PrivateAssets="All" />
+
+        <PackageReference Include="coverlet.msbuild" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="xunit" />
+        <PackageReference Include="xunit.runner.visualstudio" />
+
+        <SharpGenConsumerMapping Include="$(MSBuildThisFileDirectory)../SharpGen.Runtime/Mapping.xml" />
+        <SharpGenMapping Include="Mapping.xml" />
+    </ItemGroup>
+</Project>

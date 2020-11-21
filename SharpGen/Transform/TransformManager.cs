@@ -41,13 +41,13 @@ namespace SharpGen.Transform
     {
         private readonly List<string> _includesToProcess = new List<string>();
 
-        private readonly IDocumentationLinker docAggregator;
+        private readonly IDocumentationLinker docLinker;
         private readonly TypeRegistry typeRegistry;
         private readonly NamespaceRegistry namespaceRegistry;
         private readonly MarshalledElementFactory marshalledElementFactory;
         private readonly ConstantManager constantManager;
+        private readonly InteropManager interopManager = new InteropManager();
         private readonly GroupRegistry groupRegistry = new GroupRegistry();
-        private readonly AssemblyManager assemblyManager;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TransformManager"/> class.
@@ -57,30 +57,26 @@ namespace SharpGen.Transform
             NamingRulesManager namingRules,
             Logger logger,
             TypeRegistry typeRegistry,
-            IDocumentationLinker docAggregator,
-            ConstantManager constantManager,
-            AssemblyManager assemblyManager)
+            IDocumentationLinker docLinker,
+            ConstantManager constantManager)
         {
             GlobalNamespace = globalNamespace;
             Logger = logger;
             NamingRules = namingRules;
-            this.docAggregator = docAggregator;
+            this.docLinker = docLinker;
             this.typeRegistry = typeRegistry;
             this.constantManager = constantManager;
-            this.assemblyManager = assemblyManager;
-            namespaceRegistry = new NamespaceRegistry(logger, assemblyManager);
+            namespaceRegistry = new NamespaceRegistry(logger);
             marshalledElementFactory = new MarshalledElementFactory(Logger, GlobalNamespace, typeRegistry);
 
             EnumTransform = new EnumTransform(namingRules, logger, namespaceRegistry, typeRegistry);
 
             StructTransform = new StructTransform(namingRules, logger, namespaceRegistry, typeRegistry, marshalledElementFactory);
 
-            FunctionTransform = new MethodTransform(namingRules, logger, groupRegistry, marshalledElementFactory, globalNamespace, typeRegistry);
+            FunctionTransform = new MethodTransform(namingRules, logger, groupRegistry, marshalledElementFactory, globalNamespace, interopManager);
 
             InterfaceTransform = new InterfaceTransform(namingRules, logger, globalNamespace, FunctionTransform, FunctionTransform, typeRegistry, namespaceRegistry);
         }
-
-        public bool ForceGenerator { get; set; }
 
         /// <summary>
         /// Gets the naming rules manager.
@@ -114,53 +110,47 @@ namespace SharpGen.Transform
 
         public GlobalNamespaceProvider GlobalNamespace { get; }
         public Logger Logger { get; }
-        
+
         /// <summary>
         /// Initializes this instance with the specified C++ module and config.
         /// </summary>
         /// <param name="cppModule">The C++ module.</param>
         /// <param name="config">The root config file.</param>
-        /// <param name="checkFilesPath">The path to place check files in.</param>
-        /// <returns>Any rules that must flow to consuming projects.</returns>
-        private List<DefineExtensionRule> Init(CppModule cppModule, ConfigFile config, string checkFilesPath)
+        /// <returns>The module to transform after mapping rules have been applied.</returns>
+        private CppModule MapModule(CppModule cppModule, IReadOnlyCollection<ConfigFile> configFiles)
         {
-            var configFiles = config.ConfigFilesLoaded;
+            var numberOfConfigFilesToParse = configFiles.Count;
 
-            // Compute dependencies first
-            // In order to calculate which assembly we need to process
-            foreach (var configFile in configFiles)
-                ComputeDependencies(configFile);
-
-            // Check which assembly to update
-            foreach (var assembly in assemblyManager.Assemblies)
-                CheckAssemblyUpdate(assembly, checkFilesPath);
-
-
-            var numberOfConfigFilesToParse = 0;
-            // If we don't need to process it, skip it silently
-            foreach (var configFile in configFiles)
-                if (configFile.IsMappingToProcess)
-                    numberOfConfigFilesToParse++;
-
-            var defines = new List<DefineExtensionRule>();
             var indexFile = 0;
+
             // Process each config file
             foreach (var configFile in configFiles)
             {
-                if (configFile.IsMappingToProcess)
-                {
-                    Logger.Progress(30 + (indexFile*30)/numberOfConfigFilesToParse, "Processing mapping rules [{0}]", configFile.Assembly ?? configFile.Id);
-                    defines.AddRange(ProcessCppModuleWithConfig(cppModule, configFile));
-                    indexFile++;
-                }
-                else
-                {
-                    // Even if we don't need the mappings, we still need to add the defines so they will flow to consuming projects.
-                    defines.AddRange(ProcessDefines(configFile));
-                }
+                Logger.Progress(
+                    30 + (indexFile * 30) / numberOfConfigFilesToParse,
+                    "Processing mapping rules [{0}]",
+                    configFile.Id
+                );
+
+                ProcessCppModuleWithConfig(cppModule, configFile);
+                indexFile++;
             }
 
-            return defines;
+            // Strip out includes we aren't processing from transformation
+
+            var moduleToTransform = new CppModule
+            {
+                Name = cppModule.Name
+            };
+
+            foreach (var include in cppModule.Includes
+                                             .Where(cppInclude => _includesToProcess.Contains(cppInclude.Name))
+                                             .ToArray())
+            {
+                moduleToTransform.Add(include);
+            }
+
+            return moduleToTransform;
         }
 
         /// <summary>
@@ -174,112 +164,23 @@ namespace SharpGen.Transform
         }
 
         /// <summary>
-        /// Computes assembly dependencies from a config file.
-        /// </summary>
-        /// <param name="file">The file.</param>
-        private void ComputeDependencies(ConfigFile file)
-        {
-            if (string.IsNullOrEmpty(file.Assembly))
-                return;
-
-            var assembly = assemblyManager.GetOrCreateAssembly(file.Assembly);
-
-            // Review all includes file
-            foreach (var includeRule in file.Includes)
-            {
-                if (includeRule.Attach.HasValue && includeRule.Attach.Value)
-                    // Link this assembly to its config file (for dependency checking)
-                    assembly.AddLinkedConfigFile(file);
-                else if (includeRule.AttachTypes.Count > 0)
-                    // Link this assembly to its config file (for dependency checking)
-                    assembly.AddLinkedConfigFile(file);
-            }
-
-            // Add link to extensions if any
-            if (file.Extension.Count > 0)
-                assembly.AddLinkedConfigFile(file);
-
-            // Find all dependencies from all linked config files
-            var dependencyList = new List<ConfigFile>();
-            foreach (var linkedConfigFile in assembly.ConfigFilesLinked)
-                linkedConfigFile.FindAllDependencies(dependencyList);
-
-            // Add full dependency for this assembly from all config files
-            foreach (var linkedConfigFile in dependencyList)
-                assembly.AddLinkedConfigFile(linkedConfigFile);
-        }
-
-        /// <summary>
-        /// Checks the assembly is up to date relative to its config dependencies.
-        /// </summary>
-        /// <param name="assembly">The assembly.</param>
-        /// <param name="checkFilesPath">The path to where the check file is located.</param>
-        private void CheckAssemblyUpdate(CsAssembly assembly, string checkFilesPath)
-        {
-            var maxUpdateTime = ConfigFile.GetLatestTimestamp(assembly.ConfigFilesLinked);
-
-            if (checkFilesPath != null && File.Exists(Path.Combine(checkFilesPath, assembly.CheckFileName)))
-            {
-                if (maxUpdateTime > File.GetLastWriteTime(Path.Combine(checkFilesPath, assembly.CheckFileName)))
-                    assembly.NeedsToBeUpdated = true;
-            }
-            else
-            {
-                assembly.NeedsToBeUpdated = true;
-            }
-
-            // Force generate
-            if (ForceGenerator)
-                assembly.NeedsToBeUpdated = true;
-
-            if (assembly.NeedsToBeUpdated)
-            {
-                foreach (var linkedConfigFile in assembly.ConfigFilesLinked)
-                    linkedConfigFile.IsMappingToProcess = true;
-            }
-            string updateForMessage = (assembly.NeedsToBeUpdated) ? "Config changed. Need to update from" : "Config unchanged. No need to update from";
-
-            Logger.Message("Process assembly [{0}] => {1} dependencies: [{2}]", assembly.QualifiedName, updateForMessage,
-                           string.Join(",", assembly.ConfigFilesLinked));
-        }
-
-        /// <summary>
         /// Process the specified config file.
         /// </summary>
         /// <param name="file">The file.</param>
-        private IEnumerable<DefineExtensionRule> ProcessCppModuleWithConfig(CppModule cppModule, ConfigFile file)
+        private void ProcessCppModuleWithConfig(CppModule cppModule, ConfigFile file)
         {
             Logger.PushLocation(file.AbsoluteFilePath);
             try
             {
-                CsAssembly assembly = null;
+                Logger.Message($"Process rules for config [{file.Id}] namespace [{file.Namespace}]");
 
-                if (!string.IsNullOrEmpty(file.Assembly))
-                    assembly = assemblyManager.GetOrCreateAssembly(file.Assembly);
-
-                if (assembly != null)
-                    Logger.Message("Process rules for assembly [{0}] and namespace [{1}]", file.Assembly, file.Namespace);
-
-                // Update Naming Rules
-                UpdateNamingRules(file);
-
-                // Only attach includes when there is a bind to an assembly
-                if (assembly != null)
+                var elementFinder = new CppElementFinder(cppModule);
+                if (file.Namespace != null)
                 {
                     AttachIncludes(file);
-
-                    ProcessExtensions(cppModule, file);
+                    ProcessExtensions(elementFinder, file); 
                 }
-
-                // Handle defines separately since they do not depend on the included C++
-                // and they need to flow to consuming projects
-                var defines = ProcessDefines(file);
-
-                // Register bindings from <bindings> tag
-                RegisterBindings(file);
-
-                ProcessMappings(cppModule, file);
-                return defines;
+                ProcessMappings(elementFinder, file);
             }
             finally
             {
@@ -307,51 +208,94 @@ namespace SharpGen.Transform
             }
         }
 
-        private IEnumerable<DefineExtensionRule> ProcessDefines(ConfigFile file)
+        private void ProcessDefines(ConfigFile file)
         {
-            var defines = new List<DefineExtensionRule>();
             foreach (var defineRule in file.Extension.OfType<DefineExtensionRule>())
             {
                 CsTypeBase defineType = null;
 
                 if (defineRule.Enum != null)
-                    defineType = new CsEnum { Name = defineRule.Enum };
+                {
+                    var newEnum = new CsEnum
+                    {
+                        Name = defineRule.Enum,
+                        UnderlyingType = !string.IsNullOrWhiteSpace(defineRule.UnderlyingType)
+                            ? (CsFundamentalType)typeRegistry.ImportType(defineRule.UnderlyingType)
+                            : null
+                    };
+                    defineType = newEnum;
+
+                    if (defineRule.SizeOf.HasValue && newEnum.UnderlyingType == null)
+                    {
+                        var size = defineRule.SizeOf.Value;
+
+                        switch (size)
+                        {
+                            case 1:
+                                newEnum.UnderlyingType = typeRegistry.ImportType(typeof(byte));
+                                break;
+                            case 2:
+                                newEnum.UnderlyingType = typeRegistry.ImportType(typeof(short));
+                                break;
+                            case 4:
+                                newEnum.UnderlyingType = typeRegistry.ImportType(typeof(int));
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                }
                 else if (defineRule.Struct != null)
                 {
-                    defineType = new CsStruct { Name = defineRule.Struct };
+                    var newStruct = new CsStruct { Name = defineRule.Struct };
+                    defineType = newStruct;
                     if (defineRule.HasCustomMarshal.HasValue)
-                        ((CsStruct)defineType).HasMarshalType = defineRule.HasCustomMarshal.Value;
+                        newStruct.HasMarshalType = defineRule.HasCustomMarshal.Value;
 
                     if (defineRule.IsStaticMarshal.HasValue)
-                        ((CsStruct)defineType).IsStaticMarshal = defineRule.IsStaticMarshal.Value;
+                        newStruct.IsStaticMarshal = defineRule.IsStaticMarshal.Value;
 
                     if (defineRule.HasCustomNew.HasValue)
-                        ((CsStruct)defineType).HasCustomNew = defineRule.HasCustomNew.Value;
+                        newStruct.HasCustomNew = defineRule.HasCustomNew.Value;
+
+                    if (defineRule.SizeOf.HasValue)
+                        newStruct.SetSize(defineRule.SizeOf.Value);
+
+                    if (defineRule.Align.HasValue)
+                        newStruct.Align = defineRule.Align.Value;
+
+                    if (defineRule.IsNativePrimitive.HasValue)
+                        newStruct.IsNativePrimitive = defineRule.IsNativePrimitive.Value;
                 }
                 else if (defineRule.Interface != null)
-                    defineType = new CsInterface { Name = defineRule.Interface };
-                else if (defineRule.NewClass != null)
-                    defineType = new CsClass { Name = defineRule.NewClass };
+                {
+                    var iface =  new CsInterface
+                    {
+                        Name = defineRule.Interface,
+                        ShadowName = defineRule.ShadowName,
+                        VtblName = defineRule.VtblName
+                    };
+                    if (defineRule.NativeImplementation != null)
+                    {
+                        iface.NativeImplementation = new CsInterface { Name = defineRule.NativeImplementation, IsDualCallback = true };
+                        iface.IsCallback = true;
+                        iface.IsDualCallback = true;
+                        typeRegistry.DefineType(iface.NativeImplementation);
+                    }
+                    defineType = iface;
+                }
                 else
                 {
-                    Logger.Error("Invalid rule [{0}]. Requires one of enum, struct, class or interface", defineRule);
+                    Logger.Error(LoggingCodes.MissingElementInRule, "Invalid rule [{0}]. Requires one of enum, struct, or interface", defineRule);
                     continue;
                 }
 
-                if (defineRule.SizeOf.HasValue)
-                    defineType.SizeOf = defineRule.SizeOf.Value;
-
-                if (defineRule.Align.HasValue)
-                    defineType.Align = defineRule.Align.Value;
-
                 // Define this type
                 typeRegistry.DefineType(defineType);
-                defines.Add(defineRule);
             }
-            return defines;
         }
 
-        private void ProcessExtensions(CppModule cppModule, ConfigFile file)
+        private void ProcessExtensions(CppElementFinder elementFinder, ConfigFile file)
         {
             // Register defined Types from <extension> tag
             foreach (var extensionRule in file.Extension)
@@ -360,20 +304,20 @@ namespace SharpGen.Transform
                 {
                     if (createRule.NewClass != null)
                     {
-                        var functionGroup = CreateCsClassContainer(file.Assembly, file.Namespace, createRule.NewClass);
+                        var functionGroup = CreateCsGroup(file.Namespace, createRule.NewClass);
                         if (createRule.Visibility.HasValue)
                             functionGroup.Visibility = createRule.Visibility.Value;
                     }
                     else
-                        Logger.Error("Invalid rule [{0}]. Requires class", createRule);
+                        Logger.Error(LoggingCodes.MissingElementInRule, "Invalid rule [{0}]. Requires class", createRule);
                 }
                 else if (extensionRule is ConstantRule constantRule)
                 {
-                    HandleConstantRule(cppModule, constantRule, file.Namespace);
+                    HandleConstantRule(elementFinder, constantRule, file.Namespace);
                 }
                 else if (extensionRule is ContextRule contextRule)
                 {
-                    HandleContextRule(cppModule, file, contextRule);
+                    HandleContextRule(elementFinder, file, contextRule);
                 }
             }
         }
@@ -385,8 +329,8 @@ namespace SharpGen.Transform
             {
                 if (includeRule.Attach.HasValue && includeRule.Attach.Value)
                 {
-                    // include will be processed
-                    MapIncludeToNamespace(includeRule.Id, file.Assembly, includeRule.Namespace ?? file.Namespace, includeRule.Output);
+                    AddIncludeToProcess(includeRule.Id);
+                    namespaceRegistry.MapIncludeToNamespace(includeRule.Id, includeRule.Namespace ?? file.Namespace, includeRule.Output);
                 }
                 else
                 {
@@ -395,76 +339,103 @@ namespace SharpGen.Transform
                         AddIncludeToProcess(includeRule.Id);
 
                     foreach (var attachType in includeRule.AttachTypes)
-                        namespaceRegistry.AttachTypeToNamespace($"^{attachType}$", file.Assembly, includeRule.Namespace ?? file.Namespace, includeRule.Output);
+                        namespaceRegistry.AttachTypeToNamespace($"^{attachType}$", includeRule.Namespace ?? file.Namespace, includeRule.Output);
                 }
             }
 
             // Add extensions if any
             if (file.Extension.Count > 0)
-                MapIncludeToNamespace(file.ExtensionId, file.Assembly, file.Namespace);
+            {
+                AddIncludeToProcess(file.ExtensionId);
+                namespaceRegistry.MapIncludeToNamespace(file.ExtensionId, file.Namespace, null);
+            }
         }
 
-        private void ProcessMappings(CppModule cppModule, ConfigFile file)
+        private void ProcessMappings(CppElementFinder elementFinder, ConfigFile file)
         {
             // Perform all mappings from <mappings> tag
             foreach (var configRule in file.Mappings)
             {
+                var ruleUsed = false;
                 if (configRule is MappingRule mappingRule)
                 {
                     if (mappingRule.Enum != null)
-                        cppModule.Tag<CppEnum>(mappingRule.Enum, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppEnum>(mappingRule.Enum, mappingRule);
                     else if (mappingRule.EnumItem != null)
-                        cppModule.Tag<CppEnumItem>(mappingRule.EnumItem, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppEnumItem>(mappingRule.EnumItem, mappingRule);
                     else if (mappingRule.Struct != null)
-                        cppModule.Tag<CppStruct>(mappingRule.Struct, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppStruct>(mappingRule.Struct, mappingRule);
                     else if (mappingRule.Field != null)
-                        cppModule.Tag<CppField>(mappingRule.Field, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppField>(mappingRule.Field, mappingRule);
                     else if (mappingRule.Interface != null)
-                        cppModule.Tag<CppInterface>(mappingRule.Interface, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppInterface>(mappingRule.Interface, mappingRule);
                     else if (mappingRule.Function != null)
-                        cppModule.Tag<CppFunction>(mappingRule.Function, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppFunction>(mappingRule.Function, mappingRule);
                     else if (mappingRule.Method != null)
-                        cppModule.Tag<CppMethod>(mappingRule.Method, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppMethod>(mappingRule.Method, mappingRule);
                     else if (mappingRule.Parameter != null)
-                        cppModule.Tag<CppParameter>(mappingRule.Parameter, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppParameter>(mappingRule.Parameter, mappingRule);
                     else if (mappingRule.Element != null)
-                        cppModule.Tag<CppElement>(mappingRule.Element, mappingRule);
+                        ruleUsed = elementFinder.ExecuteRule<CppElement>(mappingRule.Element, mappingRule);
                     else if (mappingRule.DocItem != null)
-                        docAggregator.AddDocLink(mappingRule.DocItem, mappingRule.MappingNameFinal);
+                    {
+                        docLinker.AddOrUpdateDocLink(mappingRule.DocItem, mappingRule.MappingNameFinal);
+                        ruleUsed = true;
+                    }
                 }
                 else if (configRule is ContextRule contextRule)
                 {
-                    HandleContextRule(cppModule, file, contextRule);
+                    HandleContextRule(elementFinder, file, contextRule);
+                    ruleUsed = true;
                 }
                 else if (configRule is RemoveRule removeRule)
                 {
                     if (removeRule.Enum != null)
-                        cppModule.Remove<CppEnum>(removeRule.Enum);
+                        ruleUsed = RemoveElements<CppEnum>(elementFinder, removeRule.Enum);
                     else if (removeRule.EnumItem != null)
-                        cppModule.Remove<CppEnumItem>(removeRule.EnumItem);
+                        ruleUsed = RemoveElements<CppEnumItem>(elementFinder, removeRule.EnumItem);
                     else if (removeRule.Struct != null)
-                        cppModule.Remove<CppStruct>(removeRule.Struct);
+                        ruleUsed = RemoveElements<CppStruct>(elementFinder, removeRule.Struct);
                     else if (removeRule.Field != null)
-                        cppModule.Remove<CppField>(removeRule.Field);
+                        ruleUsed = RemoveElements<CppField>(elementFinder, removeRule.Field);
                     else if (removeRule.Interface != null)
-                        cppModule.Remove<CppInterface>(removeRule.Interface);
+                        ruleUsed = RemoveElements<CppInterface>(elementFinder, removeRule.Interface);
                     else if (removeRule.Function != null)
-                        cppModule.Remove<CppFunction>(removeRule.Function);
+                        ruleUsed = RemoveElements<CppFunction>(elementFinder, removeRule.Function);
                     else if (removeRule.Method != null)
-                        cppModule.Remove<CppMethod>(removeRule.Method);
+                        ruleUsed = RemoveElements<CppMethod>(elementFinder, removeRule.Method);
                     else if (removeRule.Parameter != null)
-                        cppModule.Remove<CppParameter>(removeRule.Parameter);
+                        ruleUsed = RemoveElements<CppParameter>(elementFinder, removeRule.Parameter);
                     else if (removeRule.Element != null)
-                        cppModule.Remove<CppElement>(removeRule.Element);
+                        ruleUsed = RemoveElements<CppElement>(elementFinder, removeRule.Element);
                 }
                 else if (configRule is MoveRule moveRule)
                 {
+                    ruleUsed = true;
                     if (moveRule.Struct != null)
                         StructTransform.MoveStructToInner(moveRule.Struct, moveRule.To);
                     else if (moveRule.Method != null)
                         InterfaceTransform.MoveMethodsToInnerInterface(moveRule.Method, moveRule.To, moveRule.Property, moveRule.Base);
                 }
+
+                if (!ruleUsed)
+                {
+                    Logger.Warning(LoggingCodes.UnusedMappingRule, "Mapping rule [{0}] did not match any elements.", configRule);
+                }
             }
+        }
+
+        private static bool RemoveElements<T>(CppElementFinder finder, string regex)
+            where T : CppElement
+        {
+            var matchedAny = false;
+            foreach (var item in finder.Find<T>(regex).ToList())
+            {
+                matchedAny = true;
+                item.Parent.Remove(item);
+            }
+
+            return matchedAny;
         }
 
         /// <summary>
@@ -472,11 +443,11 @@ namespace SharpGen.Transform
         /// </summary>
         /// <param name="file">The file.</param>
         /// <param name="contextRule">The context rule.</param>
-        /// <param name="cppModule">The C++ Module we are handling the context rule for.</param>
-        private void HandleContextRule(CppModule cppModule, ConfigFile file, ContextRule contextRule)
+        /// <param name="moduleMapper">The C++ Module we are handling the context rule for.</param>
+        private void HandleContextRule(CppElementFinder moduleMapper, ConfigFile file, ContextRule contextRule)
         {
             if (contextRule is ClearContextRule)
-                cppModule.ClearContextFind();
+                moduleMapper.ClearCurrentContexts();
             else
             {
                 var contextIds = new List<string>();
@@ -489,34 +460,34 @@ namespace SharpGen.Transform
                 }
                 contextIds.AddRange(contextRule.Ids);
 
-                cppModule.AddContextRangeFind(contextIds);
+                moduleMapper.AddContexts(contextIds);
             }
         }
 
-        /// <summary>
-        /// Dumps all enums, struct and interfaces to the specified file name.
-        /// </summary>
-        /// <param name="fileName">Name of the output file.</param>
-        public void Dump(string fileName)
+        private void Init(IEnumerable<ConfigFile> configFiles)
         {
-            using (var logFile = File.OpenWrite(fileName))
-            using (var log = new StreamWriter(logFile, Encoding.ASCII))
+            // We have to do these steps first, otherwise we'll get undefined types for types we've mapped, which breaks the mapping.
+            foreach (var configFile in configFiles)
             {
-                string csv = CultureInfo.CurrentCulture.TextInfo.ListSeparator;
-                string format = "{1}{0}{2}{0}{3}{0}{4}";
-
-                foreach (var assembly in assemblyManager.Assemblies)
-                {
-                    foreach (var ns in assembly.Namespaces)
+                Logger.RunInContext(
+                    configFile.AbsoluteFilePath,
+                    () =>
                     {
-                        foreach (var element in ns.Enums)
-                            log.WriteLine(format, csv, "enum", ns.Name, element.Name, element.CppElementName);
-                        foreach (var element in ns.Structs)
-                            log.WriteLine(format, csv, "struct", ns.Name, element.Name, element.CppElementName);
-                        foreach (var element in ns.Interfaces)
-                            log.WriteLine(format, csv, "interface", ns.Name, element.Name, element.CppElementName);
-                    }
-                }
+                        // Update Naming Rules
+                        UpdateNamingRules(configFile);
+
+                        ProcessDefines(configFile);
+                    });
+            }
+
+            foreach (var configFile in configFiles)
+            {
+                Logger.RunInContext(
+                    configFile.AbsoluteFilePath,
+                    () =>
+                    {
+                        RegisterBindings(configFile);
+                    });
             }
         }
 
@@ -525,17 +496,19 @@ namespace SharpGen.Transform
         /// </summary>
         /// <param name="cppModule">The C++ module to parse.</param>
         /// <param name="configFile">The config file to use to transform the C++ module into C# assemblies.</param>
-        /// <param name="checkFilesPath">The path for the check files.</param>
-        public (CsSolution solution, IEnumerable<DefineExtensionRule> consumerExtensions) Transform(CppModule cppModule, ConfigFile configFile, string checkFilesPath)
+        public (CsAssembly assembly, IEnumerable<DefineExtensionRule> consumerExtensions) Transform(CppModule cppModule, ConfigFile configFile)
         {
-            var consumerDefines = Init(cppModule, configFile, checkFilesPath);
+            Init(configFile.ConfigFilesLoaded);
+
+            var moduleToTransform = MapModule(cppModule, configFile.ConfigFilesLoaded);
+
             var selectedCSharpType = new List<CsBase>();
 
             // Prepare transform by defining/registering all types to process
-            selectedCSharpType.AddRange(PrepareTransform(cppModule, EnumTransform));
-            selectedCSharpType.AddRange(PrepareTransform(cppModule, StructTransform));
-            selectedCSharpType.AddRange(PrepareTransform(cppModule, InterfaceTransform));
-            selectedCSharpType.AddRange(PrepareTransform<CppFunction, CsFunction>(cppModule, FunctionTransform));
+            selectedCSharpType.AddRange(PrepareTransform(moduleToTransform, EnumTransform));
+            selectedCSharpType.AddRange(PrepareTransform(moduleToTransform, StructTransform));
+            selectedCSharpType.AddRange(PrepareTransform(moduleToTransform, InterfaceTransform));
+            selectedCSharpType.AddRange(PrepareTransform<CppFunction, CsFunction>(moduleToTransform, FunctionTransform));
 
             // Transform all types
             Logger.Progress(65, "Transforming enums...");
@@ -547,19 +520,21 @@ namespace SharpGen.Transform
             Logger.Progress(80, "Transforming functions...");
             ProcessTransform(FunctionTransform, selectedCSharpType.OfType<CsFunction>());
 
-            var solution = new CsSolution();
-
-            foreach (CsAssembly cSharpAssembly in assemblyManager.Assemblies)
+            var asm = new CsAssembly
             {
-                foreach (var ns in cSharpAssembly.Namespaces)
+                Interop = interopManager
+            };
+
+            foreach (var ns in namespaceRegistry.Namespaces)
+            {
+                foreach (var group in ns.Classes)
                 {
-                    foreach (var cSharpFunctionGroup in ns.Classes)
-                        constantManager.AttachConstants(cSharpFunctionGroup);
+                    constantManager.AttachConstants(group);
                 }
-                solution.Add(cSharpAssembly);
+                asm.Add(ns);
             }
 
-            return (solution, consumerDefines);
+            return (asm, configFile.ConfigFilesLoaded.SelectMany(file => file.Extension.OfType<DefineExtensionRule>()));
         }
 
         /// <summary>
@@ -574,7 +549,7 @@ namespace SharpGen.Transform
         {
             var csElements = new List<TCsElement>();
             // Predefine all structs, typedefs and interfaces
-            foreach (var cppInclude in cppModule.Includes.Where(cppInclude => _includesToProcess.Contains(cppInclude.Name)))
+            foreach (var cppInclude in cppModule.Includes)
             {
                 foreach (var cppItem in cppInclude.Iterate<TCppElement>())
                 {
@@ -582,7 +557,7 @@ namespace SharpGen.Transform
                         cppItem.ToString(),
                         () =>
                         {
-                            // If a struct is already mapped, it means that there is already a predefined mapping
+                            // If already mapped, it means that there is already a predefined mapping
                             if (typeRegistry.FindBoundType(cppItem.Name) == null)
                             {
                                 var csElement = transform.Prepare(cppItem);
@@ -617,13 +592,13 @@ namespace SharpGen.Transform
         }
 
         /// <summary>
-        /// Creates the C# class container (used by functions, constants, variables).
+        /// Creates the C# class container used to group together loose elements (i.e. functions, constants).
         /// </summary>
-        /// <param name="assemblyName">Name of the assembly.</param>
         /// <param name="namespaceName">Name of the namespace.</param>
         /// <param name="className">Name of the class.</param>
+        /// 
         /// <returns>The C# class container</returns>
-        private CsClass CreateCsClassContainer(string assemblyName, string namespaceName, string className)
+        private CsGroup CreateCsGroup(string namespaceName, string className)
         {
             if (className == null) throw new ArgumentNullException(nameof(className));
 
@@ -633,7 +608,7 @@ namespace SharpGen.Transform
                 className = Path.GetExtension(className).Trim('.');
             }
 
-            var csNameSpace = assemblyManager.GetOrCreateNamespace(assemblyName, namespaceName);
+            var csNameSpace = namespaceRegistry.GetOrCreateNamespace(namespaceName);
 
             foreach (var cSharpFunctionGroup in csNameSpace.Classes)
             {
@@ -642,7 +617,7 @@ namespace SharpGen.Transform
             }
 
 
-            var group = new CsClass {Name = className};
+            var group = new CsGroup {Name = className};
             csNameSpace.Add(group);
 
             groupRegistry.RegisterGroup(namespaceName + "." + className, group);
@@ -654,10 +629,10 @@ namespace SharpGen.Transform
         /// Handles the constant rule.
         /// </summary>
         /// <param name="constantRule">The constant rule.</param>
-        private void HandleConstantRule(CppModule cppModule, ConstantRule constantRule, string nameSpace)
+        private void HandleConstantRule(CppElementFinder elementFinder, ConstantRule constantRule, string nameSpace)
         {
             constantManager.AddConstantFromMacroToCSharpType(
-                cppModule,
+                elementFinder,
                 constantRule.Macro ?? constantRule.Guid,
                 constantRule.ClassName,
                 constantRule.Type,
@@ -667,131 +642,47 @@ namespace SharpGen.Transform
                 nameSpace);
         }
 
-        /// <summary>
-        /// Maps a particular C++ include to a C# namespace.
-        /// </summary>
-        /// <param name="includeName">Name of the include.</param>
-        /// <param name="assemblyName">Name of the assembly.</param>
-        /// <param name="nameSpace">The name space.</param>
-        /// <param name="outputDirectory">The output directory.</param>
-        private void MapIncludeToNamespace(string includeName, string assemblyName, string nameSpace, string outputDirectory = null)
-        {
-            AddIncludeToProcess(includeName);
-
-            namespaceRegistry.MapIncludeToNamespace(includeName, assemblyName, nameSpace, outputDirectory);
-        }
-
-        /// <summary>
-        /// Print statistics for this transform.
-        /// </summary>
-        public void PrintStatistics()
-        {
-            var globalStats = new Dictionary<string, int>();
-            globalStats["interfaces"] = 0;
-            globalStats["methods"] = 0;
-            globalStats["parameters"] = 0;
-            globalStats["enums"] = 0;
-            globalStats["structs"] = 0;
-            globalStats["fields"] = 0;
-            globalStats["enumitems"] = 0;
-            globalStats["functions"] = 0;
-            
-            foreach (var assembly in assemblyManager.Assemblies)
-            {
-                var stats = globalStats.ToDictionary(globalStat => globalStat.Key, globalStat => 0);
-
-                foreach (var nameSpace in assembly.Items)
-                {
-                    // Enums, Structs, Interface, FunctionGroup
-                    foreach (var item in nameSpace.Items)
-                    {
-                        if (item is CsInterface) stats["interfaces"]++;
-                        else if (item is CsStruct) stats["structs"]++;
-                        else if (item is CsEnum) stats["enums"]++;
-
-                        foreach (var subitem in item.Items)
-                        {
-                            if (subitem is CsFunction)
-                            {
-                                stats["functions"]++;
-                                stats["parameters"] += subitem.Items.Count;
-                            }
-                            else if (subitem is CsMethod)
-                            {
-                                stats["methods"]++;
-                                stats["parameters"] += subitem.Items.Count;
-                            }
-                            else if (subitem is CsEnumItem)
-                            {
-                                stats["enumitems"]++;
-                            }
-                            else if (subitem is CsField)
-                            {
-                                stats["fields"]++;
-                            }
-                        }
-                    }
-
-                    foreach (var stat in stats) globalStats[stat.Key] += stat.Value;
-                }
-
-                Logger.Message("Assembly [{0}] Statistics", assembly.QualifiedName);
-                foreach (var stat in stats)
-                    Logger.Message("\tNumber of {0} : {1}", stat.Key, stat.Value);
-            }
-            Logger.Message("\n");
-
-            Logger.Message("Global Statistics:");
-            foreach (var stat in globalStats)
-                Logger.Message("\tNumber of {0} : {1}", stat.Key, stat.Value);
-        }
 
         public (IEnumerable<BindRule> bindings, IEnumerable<DefineExtensionRule> defines) GenerateTypeBindingsForConsumers()
         {
             return (from record in typeRegistry.GetTypeBindings()
-                   select new BindRule(record.CppType, record.CSharpType.QualifiedName),
+                   select new BindRule(record.CppType, record.CSharpType.QualifiedName, record.MarshalType?.QualifiedName),
                    GenerateDefinesForMappedTypes());
         }
 
         private IEnumerable<DefineExtensionRule> GenerateDefinesForMappedTypes()
         {
-            foreach (var mapping in typeRegistry.GetTypeBindings())
+            foreach (var (_, CSharpType, _) in typeRegistry.GetTypeBindings())
             {
-                switch (mapping.CSharpType)
+                switch (CSharpType)
                 {
                     case CsEnum csEnum:
                         yield return new DefineExtensionRule
                         {
                             Enum = csEnum.QualifiedName,
-                            SizeOf = csEnum.SizeOf,
-                            Align = csEnum.Align
-                        };
-                        break;
-                    case CsClass csClass:
-                        yield return new DefineExtensionRule
-                        {
-                            NewClass = csClass.QualifiedName,
-                            SizeOf = csClass.SizeOf,
-                            Align = csClass.Align
+                            SizeOf = csEnum.Size,
+                            UnderlyingType = csEnum.UnderlyingType?.BuiltinTypeName
                         };
                         break;
                     case CsStruct csStruct:
                         yield return new DefineExtensionRule
                         {
                             Struct = csStruct.QualifiedName,
-                            SizeOf = csStruct.SizeOf,
+                            SizeOf = csStruct.Size,
                             Align = csStruct.Align,
                             HasCustomMarshal = csStruct.HasCustomMarshal,
                             HasCustomNew = csStruct.HasCustomNew,
-                            IsStaticMarshal = csStruct.IsStaticMarshal
+                            IsStaticMarshal = csStruct.IsStaticMarshal,
+                            IsNativePrimitive = csStruct.IsNativePrimitive
                         };
                         break;
                     case CsInterface csInterface:
                         yield return new DefineExtensionRule
                         {
                             Interface = csInterface.QualifiedName,
-                            SizeOf = csInterface.SizeOf,
-                            Align = csInterface.Align
+                            NativeImplementation = csInterface.NativeImplementation?.QualifiedName,
+                            ShadowName = csInterface.ShadowName,
+                            VtblName = csInterface.VtblName
                         };
                         break;
                 }

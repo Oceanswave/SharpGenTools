@@ -27,41 +27,37 @@ namespace SharpGenTools.Sdk.Tasks
         [Required]
         public string OutputPath { get; set; }
 
-        public bool ForceParsing { get; set; }
-
         protected override bool Execute(ConfigFile config)
         {
-            var cppHeaderGenerator = new CppHeaderGenerator(
-                SharpGenLogger,
-                ForceParsing,
-                OutputPath);
+            var cppHeaderGenerator = new CppHeaderGenerator(SharpGenLogger, OutputPath);
 
-            var configsWithHeaders = new HashSet<ConfigFile>();
+            var configsWithHeaders = new HashSet<ConfigFile>(ConfigFile.IdComparer);
+            var configsWithExtensions = new HashSet<ConfigFile>(ConfigFile.IdComparer);
+
             foreach (var cfg in config.ConfigFilesLoaded)
             {
                 if (HeaderFiles.Any(item => item.GetMetadata("ConfigId") == cfg.Id))
-                {
                     configsWithHeaders.Add(cfg);
-                }
+
+                if (ExtensionHeaders.Any(item => item.GetMetadata("ConfigId") == cfg.Id))
+                    configsWithExtensions.Add(cfg);
             }
 
-            var configsWithExtensions = new HashSet<string>();
-            foreach (var file in ExtensionHeaders)
+            var cppHeaderGenerationResult = cppHeaderGenerator.GenerateCppHeaders(config, configsWithHeaders, configsWithExtensions);
+
+            var consumerConfig = new ConfigFile
             {
-                configsWithExtensions.Add(file.GetMetadata("ConfigId"));
-            }
+                Id = "CppConsumerConfig",
+                IncludeProlog = {cppHeaderGenerationResult.Prologue}
+            };
 
-            var (updatedConfigs, consumerCppConfig) = cppHeaderGenerator.GenerateCppHeaders(config, configsWithHeaders, configsWithExtensions);
-
-            consumerCppConfig.Id = "ConsumerCppConfigCache";
-
-            consumerCppConfig.Write(CppConsumerConfigCache.ItemSpec);
+            consumerConfig.Write(CppConsumerConfigCache.ItemSpec);
 
             var updatedConfigFiles = new List<ITaskItem>();
 
             foreach (var cfg in configsWithHeaders)
             {
-                if (updatedConfigs.Contains(cfg) && cfg.AbsoluteFilePath != null)
+                if (cppHeaderGenerationResult.UpdatedConfigs.Contains(cfg) && cfg.AbsoluteFilePath != null)
                 {
                     var item = new TaskItem(cfg.AbsoluteFilePath);
                     item.SetMetadata("Id", cfg.Id);
